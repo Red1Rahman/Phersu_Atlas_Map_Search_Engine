@@ -1,0 +1,19 @@
+# Ignore the data directory which contains PDFs and ChromaDB files
+data/
+# Python specific ignores
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python/
+env/
+venv/  # Your virtual environment folder
+*.env
+.env.*
+.ipynb_checkpoints/ # Jupyter notebooks checkpoints
+
+# IDE specific ignores (e.g., VS Code)
+.vscode/
+
+# Database files (if you use SQLite directly in Django)
+*.sqlite3
