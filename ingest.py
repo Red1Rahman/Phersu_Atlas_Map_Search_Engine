@@ -21,7 +21,7 @@ def get_file_names_in_folder(folder_path):
 file_names = get_file_names_in_folder("./data/pdfs/")
 CHHROMA_SAVEPATH = "./data/chroma_db"
 split_by = "sentence"  # Options: "sentence", "paragraph", "word"
-split_length = 75  # Number of sentences/paragraphs/words to split by
+split_length = 10  # Number of sentences/paragraphs/words to split by
 timestamp_str = datetime.now().strftime("%Y%m%d-%H%M%S")
 
 ds = ChromaDocumentStore(persist_path=CHHROMA_SAVEPATH)
