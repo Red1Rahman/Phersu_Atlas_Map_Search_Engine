@@ -12,6 +12,9 @@ venv/  # Your virtual environment folder
 .env.*
 .ipynb_checkpoints/ # Jupyter notebooks checkpoints
 
+# Ignore my scripts
+setup_env.bat
+
 # IDE specific ignores (e.g., VS Code)
 .vscode/
 

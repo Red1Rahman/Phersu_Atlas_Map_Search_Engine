@@ -25,18 +25,17 @@ except Exception as e:
 def write_n_retrieved_docs_to_file(retrieval_pipeline, timestamp, n):
     QUESTIONS = "./data/input/questions.txt"
     test_file_name = f"./data/output/qaRagTest_{timestamp}.txt"
-
     try:
         with open(QUESTIONS, "r", encoding='utf-8') as file:
             lines = file.readlines()
 
         with open(test_file_name, 'a', encoding='utf-8') as f:
             for line_num, line in enumerate(lines):
-                test_query = line.strip()
+                test_query = str(line.strip())
                 if not test_query:
                     continue
 
-                f.write(str(test_query) + "\n")
+                f.write(f"{test_query}\n")
                 f.write("--- LLM Generated Answer ---\n")
 
                 try:
@@ -45,6 +44,7 @@ def write_n_retrieved_docs_to_file(retrieval_pipeline, timestamp, n):
                         "prompt_builder": {"query": test_query}
                     })
 
+                    print(f"  Pipeline run completed for query: '{test_query}'")
                     embedder_output = results.get("text_embedder", {})
                     if "embedding" in embedder_output and embedder_output["embedding"]:
                         print(f"  Text Embedder generated embedding (length: {len(embedder_output['embedding'])}).")
@@ -106,15 +106,15 @@ Documents:
 {% endfor %}
 """),
     ChatMessage.from_user("{{query}}")
-]))
+],
+required_variables=['documents', 'query']
+))
 retrieval_pipeline.add_component("gemini_generator", GoogleGenAIChatGenerator(model="gemini-1.5-flash"))
 
 retrieval_pipeline.connect("text_embedder.embedding", "retriever.query_embedding")
 retrieval_pipeline.connect("retriever.documents", "prompt_builder.documents")
 retrieval_pipeline.connect("prompt_builder.prompt", "gemini_generator.messages")
 
-# --- CRITICAL FIX: Warm up the pipeline components ---
-# This ensures all models and heavy resources are loaded before running queries
 print("Warming up the RAG pipeline components...")
 try:
     retrieval_pipeline.warm_up()
@@ -122,6 +122,5 @@ try:
 except Exception as e:
     print(f"ERROR: Failed to warm up RAG pipeline components: {e}")
     print("This often indicates issues with model downloads or API key setup.")
-# --- END CRITICAL FIX ---
 
 write_n_retrieved_docs_to_file(retrieval_pipeline, timestamp_str, 3)
