@@ -133,3 +133,56 @@ STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
 # https://docs.djangoproject.com/en/5.0/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'verbose': {
+            'format': '{levelname} {asctime} {module} {process:d} {thread:d} {message}',
+            'style': '{',
+        },
+        'simple': {
+            'format': '{levelname} {message}',
+            'style': '{',
+        },
+    },
+    'handlers': {
+        'console': {
+            'level': 'INFO', # Set to INFO or DEBUG for more verbose output
+            'class': 'logging.StreamHandler',
+            'formatter': 'simple', # Use 'simple' for cleaner console output
+        },
+        # You could add a file handler for production
+        # 'file': {
+        #     'level': 'INFO',
+        #     'class': 'logging.FileHandler',
+        #     'filename': os.path.join(BASE_DIR, 'django_debug.log'),
+        #     'formatter': 'verbose',
+        # },
+    },
+    'loggers': {
+        'django': {
+            'handlers': ['console'],
+            'level': 'INFO', # Log Django's own messages
+            'propagate': False,
+        },
+        'map_api': { # Logger for your specific app
+            'handlers': ['console'],
+            'level': 'INFO', # Set to INFO or DEBUG for more details from your app
+            'propagate': False,
+        },
+        'haystack': { # Logger for Haystack
+            'handlers': ['console'],
+            'level': 'INFO', # Set to INFO or DEBUG for more details from Haystack
+            'propagate': False,
+        },
+        '': { # Root logger - catches anything not caught by other loggers
+            'handlers': ['console'],
+            'level': 'WARNING', # Default to WARNING for less verbose general output
+            'propagate': False,
+        },
+    },
+}
+
+
