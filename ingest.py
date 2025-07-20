@@ -6,6 +6,9 @@ from haystack.components.preprocessors import DocumentSplitter
 from haystack.components.writers import DocumentWriter
 import os
 from datetime import datetime
+import time
+start = time.time()
+
 
 def get_file_names_in_folder(folder_path):
     """
@@ -24,7 +27,9 @@ split_by = "sentence"  # Options: "sentence", "paragraph", "word"
 split_length = 10  # Number of sentences/paragraphs/words to split by
 timestamp_str = datetime.now().strftime("%Y%m%d-%H%M%S")
 
-ds = ChromaDocumentStore(persist_path=CHHROMA_SAVEPATH)
+ds = ChromaDocumentStore(persist_path=CHHROMA_SAVEPATH, distance_function='cosine') # cosine is often preferred for text embeddings
+# ds = ChromaDocumentStore(persist_path=CHHROMA_SAVEPATH) # Default distance function is 'l2'
+
 pipe = Pipeline()
 pipe.add_component("converter", PyPDFToDocument())
 pipe.add_component("cleaner", DocumentCleaner())
@@ -63,3 +68,6 @@ try:
 except Exception as e:
     print(f"An error occurred during pipeline execution: {e}")
     print("Please ensure the PDF path is correct and the file is readable.")
+
+end = time.time()
+print(f"Time taken: {end - start} seconds")
