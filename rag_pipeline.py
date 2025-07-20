@@ -33,7 +33,7 @@ def write_n_retrieved_docs_to_file(retrieval_pipeline, timestamp, n):
                     if retrieved_docs:
                         # print(f"\n--- Retrieved {len(retrieved_docs)} documents for query: '{test_query}' ---")
                         # test_file_name = f"./data/output/{"".join(x for x in test_query if x.isalnum())}_{timestamp_str}.txt"
-                        with open(test_file_name, 'w', encoding='utf-8') as f:
+                        with open(test_file_name, 'a', encoding='utf-8') as f:
                             f.write(test_query  + "\n")
                             for i, doc in enumerate(retrieved_docs[:n]):
                                 f.write(f"\nDocument {i+1} (ID: {doc.id}, Score: {doc.score:.4f}):")
