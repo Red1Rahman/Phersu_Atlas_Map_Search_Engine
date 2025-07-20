@@ -4,7 +4,11 @@ class QuerySerializer(serializers.Serializer):
     """
     Serializer for the incoming user query.
     """
-    query = serializers.CharField(max_length=500, help_text="The question to ask the RAG pipeline.")
+    query = serializers.CharField(
+        min_length=5,  # Minimum length for a meaningful query
+        max_length=150, # Maximum length to prevent overly long queries
+        help_text="The question to ask the RAG pipeline."
+    )
 
 class DocumentMetadataSerializer(serializers.Serializer):
     """

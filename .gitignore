@@ -20,3 +20,7 @@ setup_env.bat
 
 # Database files (if you use SQLite directly in Django)
 *.sqlite3
+
+# Ignore Django static files
+# This is where Django collects static files for production
+/staticfiles/
