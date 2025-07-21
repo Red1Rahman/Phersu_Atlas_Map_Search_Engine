@@ -2,29 +2,43 @@ from haystack import Pipeline
 from haystack_integrations.document_stores.chroma import ChromaDocumentStore
 from haystack.components.embedders import SentenceTransformersTextEmbedder
 from haystack_integrations.components.retrievers.chroma import ChromaEmbeddingRetriever
-from haystack.components.builders import ChatPromptBuilder
-from haystack_integrations.components.generators.google_genai import GoogleGenAIChatGenerator
-from haystack.dataclasses.chat_message import ChatMessage, ChatRole
+# Removed: from haystack.components.builders import ChatPromptBuilder
+# Removed: from haystack.dataclasses.chat_message import ChatMessage, ChatRole
 import os
 from datetime import datetime
+import logging
+
+# Configure logging for this script
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 CHHROMA_SAVEPATH = "./data/chroma_db"
 timestamp_str = datetime.now().strftime("%Y%m%d-%H%M%S")
 
-ds = ChromaDocumentStore(persist_path=CHHROMA_SAVEPATH)
+# Initialize ChromaDocumentStore, ensuring cosine distance is set
+ds = ChromaDocumentStore(persist_path=CHHROMA_SAVEPATH, distance_function="cosine")
 
 try:
     doc_count = ds.count_documents()
-    print(f"Found {doc_count} documents in the ChromaDocumentStore.")
+    logger.info(f"Found {doc_count} documents in the ChromaDocumentStore.")
     if doc_count == 0:
-        print("Warning: No documents found in the store. Please ingestion first or check the data path.")
+        logger.warning("Warning: No documents found in the store. Please run ingestion first or check the data path.")
 except Exception as e:
-    print(f"Error checking document count: {e}")
-    print("Ensure ChromaDB is correctly initialized and the data path exists and is accessible.")
+    logger.error(f"Error checking document count: {e}")
+    logger.error("Ensure ChromaDB is correctly initialized and the data path exists and is accessible.")
 
-def write_n_retrieved_docs_to_file(retrieval_pipeline, timestamp, n):
+def write_retrieval_results_to_file(retrieval_pipeline, timestamp, n):
+    """
+    Runs queries from questions.txt through the retrieval pipeline
+    and writes the retrieved documents to a file.
+    """
     QUESTIONS = "./data/input/questions.txt"
-    test_file_name = f"./data/output/qaRagTest_{timestamp}.txt"
+    test_file_name = f"./data/output/pure_retrieval_test_results_{timestamp}.txt"
+
+    output_dir = os.path.dirname(test_file_name)
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+
     try:
         with open(QUESTIONS, "r", encoding='utf-8') as file:
             lines = file.readlines()
@@ -35,40 +49,29 @@ def write_n_retrieved_docs_to_file(retrieval_pipeline, timestamp, n):
                 if not test_query:
                     continue
 
-                f.write(f"{test_query}\n")
-                f.write("--- LLM Generated Answer ---\n")
+                logger.info(f"[{line_num + 1}/{len(lines)}] Processing Query for Pure Retrieval Test: '{test_query}'")
+
+                f.write(f"Query: {test_query}\n")
+                f.write("--- Retrieved Documents (Top {}) ---\n".format(n))
 
                 try:
                     results = retrieval_pipeline.run({
-                        "text_embedder": {"text": test_query},
-                        "prompt_builder": {"query": test_query}
+                        "text_embedder": {"text": test_query}
                     })
 
-                    print(f"  Pipeline run completed for query: '{test_query}'")
-                    embedder_output = results.get("text_embedder", {})
-                    if "embedding" in embedder_output and embedder_output["embedding"]:
-                        print(f"  Text Embedder generated embedding (length: {len(embedder_output['embedding'])}).")
-                    else:
-                        print("  WARNING: Text Embedder did NOT generate an embedding.")
+                    logger.info(f"  Pipeline run completed for query: '{test_query}'")
+                    
                     retrieved_docs = results.get("retriever", {}).get("documents", [])
-                    print(f"  Retriever returned {len(retrieved_docs)} documents.")
+                    logger.info(f"  Retriever returned {len(retrieved_docs)} documents.")
                     if not retrieved_docs:
-                        print("  WARNING: Retriever returned an empty list of documents.")
-                    built_messages = results.get("prompt_builder", {}).get("prompt", [])
-                    print(f"  PromptBuilder built {len(built_messages)} messages.")
-                    if not built_messages:
-                        print("  WARNING: PromptBuilder built an empty list of messages.")
-
-
-                    llm_reply = results.get("gemini_generator", {}).get("replies", ["No answer generated."])[0]
-
-                    f.write(llm_reply + "\n\n")
-                    f.write(f"--- Retrieved Documents (Top {n}) ---\n")
+                        logger.warning("  WARNING: Retriever returned an empty list of documents.")
+                    
                     if retrieved_docs:
                         for i, doc in enumerate(retrieved_docs[:n]):
+                            content_snippet = doc.content
                             f.write(f"\nDocument {i+1} (ID: {doc.id}, Score: {doc.score:.4f}):\n")
-                            f.write("Content:\n")
-                            f.write(doc.content + "\n")
+                            f.write("Content Snippet:\n")
+                            f.write(content_snippet + "\n")
                             f.write("Metadata:\n")
                             f.write(str(doc.meta) + "\n")
                             f.write("-" * 50 + "\n")
@@ -76,51 +79,38 @@ def write_n_retrieved_docs_to_file(retrieval_pipeline, timestamp, n):
                         f.write(f"\nNo documents retrieved for query: '{test_query}'.\n")
                         f.write("Consider checking your indexed documents, the query, or the embedding model.\n")
                         f.write("-" * 50 + "\n")
+                    
                     f.write("\n" * 2)
 
                 except Exception as e:
-                    error_msg = f"An error occurred during RAG pipeline execution for query '{test_query}': {e}"
-                    print(f"Error: {error_msg}")
+                    error_msg = f"An error occurred during retrieval pipeline execution for query '{test_query}': {e}"
+                    logger.error(f"Error: {error_msg}", exc_info=True)
                     f.write(f"Error: {error_msg}\n\n")
                     f.write("\n" + "-" * 50 + "\n")
-            print(f"\nAll results written to: {test_file_name}")
+            logger.info(f"\nAll pure retrieval test results written to: {test_file_name}")
 
     except FileNotFoundError as e:
-        print(f"Error: Questions file not found at '{QUESTIONS}'. Please create it. Details: {e}")
+        logger.error(f"Error: Questions file not found at '{QUESTIONS}'. Please create it. Details: {e}")
     except Exception as e:
-        print(f"An unexpected error occurred during file operations or general setup: {e}")
-        print("Please ensure the file paths are correct, permissions are set, and your Gemini API key is valid.")
+        logger.error(f"An unexpected error occurred during file operations or general setup: {e}", exc_info=True)
 
 
+# Define the pure retrieval pipeline components
 retrieval_pipeline = Pipeline()
 retrieval_pipeline.add_component("text_embedder", SentenceTransformersTextEmbedder(model="all-MiniLM-L6-v2"))
 retrieval_pipeline.add_component("retriever", ChromaEmbeddingRetriever(document_store=ds))
-retrieval_pipeline.add_component("prompt_builder", ChatPromptBuilder(template=[
-    ChatMessage.from_system("""
-Given the following information, answer the question concisely and accurately.
-If the provided information does not contain the answer, state that the answer is not found in the provided context.
+# PromptBuilder component is NOT added here
 
-Documents:
-{% for doc in documents %}
-    {{ doc.content }}
-{% endfor %}
-"""),
-    ChatMessage.from_user("{{query}}")
-],
-required_variables=['documents', 'query']
-))
-retrieval_pipeline.add_component("gemini_generator", GoogleGenAIChatGenerator(model="gemini-1.5-flash"))
-
+# Connect only the text_embedder to the retriever
 retrieval_pipeline.connect("text_embedder.embedding", "retriever.query_embedding")
-retrieval_pipeline.connect("retriever.documents", "prompt_builder.documents")
-retrieval_pipeline.connect("prompt_builder.prompt", "gemini_generator.messages")
 
-print("Warming up the RAG pipeline components...")
+logger.info("Warming up the pure retrieval pipeline components...")
 try:
     retrieval_pipeline.warm_up()
-    print("RAG pipeline components warmed up successfully.")
+    logger.info("Pure retrieval pipeline components warmed up successfully.")
 except Exception as e:
-    print(f"ERROR: Failed to warm up RAG pipeline components: {e}")
-    print("This often indicates issues with model downloads or API key setup.")
+    logger.error(f"ERROR: Failed to warm up pure retrieval pipeline components: {e}", exc_info=True)
+    logger.error("This often indicates issues with model downloads or API key setup.")
 
-write_n_retrieved_docs_to_file(retrieval_pipeline, timestamp_str, 3)
+# Run the pure retrieval test
+write_retrieval_results_to_file(retrieval_pipeline, timestamp_str, 3)
