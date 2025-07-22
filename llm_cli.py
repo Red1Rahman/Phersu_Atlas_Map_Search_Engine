@@ -1,122 +1,119 @@
+import os
+import json
+import logging
+from datetime import datetime
+from pathlib import Path
+
 from haystack import Pipeline
 from haystack_integrations.document_stores.chroma import ChromaDocumentStore
 from haystack.components.embedders import SentenceTransformersTextEmbedder
 from haystack_integrations.components.retrievers.chroma import ChromaEmbeddingRetriever
 from haystack.components.builders import ChatPromptBuilder
 from haystack_integrations.components.generators.google_genai import GoogleGenAIChatGenerator
-from haystack.dataclasses.chat_message import ChatMessage, ChatRole
-import os
-import logging
+from haystack.dataclasses.chat_message import ChatMessage
 
-# Configure logging to show more details, especially for Haystack components
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Define the path to your persistent ChromaDB store
-CHHROMA_SAVEPATH = "./data/chroma_db"
+CHROMA_SAVEPATH = "./data/chroma_db"
 
-def setup_retrieval_pipeline():
-    logger.info(f"Initializing ChromaDocumentStore from: {CHHROMA_SAVEPATH}")
-    ds = ChromaDocumentStore(persist_path=CHHROMA_SAVEPATH)
+def setup_pipeline():
+    logger.info("Initializing ChromaDocumentStore...")
+    ds = ChromaDocumentStore(persist_path=CHROMA_SAVEPATH)
 
-    try:
-        doc_count = ds.count_documents()
-        logger.info(f"Found {doc_count} documents in the ChromaDocumentStore.")
-        if doc_count == 0:
-            logger.warning("Warning: No documents found in the store. Please run ingestion first or check the data path.")
-    except Exception as e:
-        logger.error(f"Error checking document count: {e}")
-        logger.error("Ensure ChromaDB is correctly initialized and the data path exists and is accessible.")
-        return None
-
-    retrieval_pipeline = Pipeline()
-    retrieval_pipeline.add_component("text_embedder", SentenceTransformersTextEmbedder(model="all-MiniLM-L6-v2"))
-    retrieval_pipeline.add_component("retriever", ChromaEmbeddingRetriever(document_store=ds))
-    retrieval_pipeline.add_component("prompt_builder", ChatPromptBuilder(template=[
+    pipe = Pipeline()
+    pipe.add_component("embedder", SentenceTransformersTextEmbedder(model="sentence-transformers/all-mpnet-base-v2"))
+    pipe.add_component("retriever", ChromaEmbeddingRetriever(document_store=ds))
+    pipe.add_component("prompt_builder", ChatPromptBuilder(template=[
         ChatMessage.from_system("""
-Given the following information, answer the question concisely and accurately.
-If the provided information does not contain the answer, state that the answer is not found in the provided context.
+You are a helpful assistant. From the provided documents, extract any geographic or map-relevant locations.
 
+Return your response as a JSON array of objects:
+[
+  {
+    "location_name": "name of the place",
+    "description": "why it is relevant or what is happening there"
+  },
+  ...
+]
+
+Guidelines:
+- Only return the JSON — no explanation or commentary.
+- If no relevant locations are found, return: []
 Documents:
 {% for doc in documents %}
-    {{ doc.content }}
+  {{ doc.content }}
 {% endfor %}
 """),
-        ChatMessage.from_user("{{query}}")
-    ],
-    required_variables=['documents', 'query']
-    ))
-    retrieval_pipeline.add_component("gemini_generator", GoogleGenAIChatGenerator(model="gemini-1.5-flash"))
+        ChatMessage.from_user("Query: {{query}}")
+    ], required_variables=["documents", "query"]))
+    pipe.add_component("generator", GoogleGenAIChatGenerator(model="gemini-1.5-flash"))
 
-    # Connect components
-    retrieval_pipeline.connect("text_embedder.embedding", "retriever.query_embedding")
-    retrieval_pipeline.connect("retriever.documents", "prompt_builder.documents")
-    retrieval_pipeline.connect("prompt_builder.prompt", "gemini_generator.messages")
+    pipe.connect("embedder.embedding", "retriever.query_embedding")
+    pipe.connect("retriever.documents", "prompt_builder.documents")
+    pipe.connect("prompt_builder.prompt", "generator.messages")
 
-    logger.info("Warming up the LLM pipeline components...")
-    try:
-        retrieval_pipeline.warm_up()
-        logger.info("LLM pipeline components warmed up successfully.")
-    except Exception as e:
-        logger.error(f"ERROR: Failed to warm up LLM pipeline components: {e}")
-        logger.error("This often indicates issues with model downloads or API key setup.")
-        return None
-    
-    return retrieval_pipeline
+    pipe.warm_up()
+    return pipe
 
 def main():
-    """
-    Main function to run the interactive LLM CLI.
-    """
-    pipeline = setup_retrieval_pipeline()
-    if pipeline is None:
-        logger.error("Failed to set up LLM pipeline. Exiting.")
-        return
-
-    print("\n--- Interactive LLM CLI ---")
-    print("Type your questions below. Type 'exit' to quit.")
-    print("---------------------------\n")
+    pipeline = setup_pipeline()
+    print("Ask your question (or type 'exit'):")
 
     while True:
-        user_query = input("Your question: ")
-        if user_query.lower() == 'exit':
-            print("Exiting LLM CLI. Goodbye!")
+        query = input("Your question: ").strip()
+        if query.lower() == "exit":
+            print("Exiting.")
             break
-
-        if not user_query.strip():
-            print("Please enter a non-empty question.")
+        if not query:
+            print("Please enter a valid query.")
             continue
 
         try:
-            # Run the pipeline
             results = pipeline.run({
-                "text_embedder": {"text": user_query},
-                "prompt_builder": {"query": user_query}
+                "embedder": {"text": query},
+                "prompt_builder": {"query": query}
             })
 
-            # Extract results
-            llm_reply = results.get("gemini_generator", {}).get("replies", ["No answer generated."])[0]
+            llm_reply = results.get("generator", {}).get("replies", ["No answer"])[0]
+            raw_text = llm_reply.text if hasattr(llm_reply, "text") else str(llm_reply)
+
+            print("\n--- LLM Answer ---")
+            print(raw_text)
+
+            print("\n--- Retrieved Documents ---")
             retrieved_docs = results.get("retriever", {}).get("documents", [])
+            for i, doc in enumerate(retrieved_docs[:3]):
+                print(f"\nDocument {i+1} (Score: {doc.score:.4f})")
+                print(f"Snippet: {doc.content[:300].strip()}...")
+                print(f"Meta: {doc.meta}")
 
-            print("\n--- LLM Generated Answer ---")
-            print(llm_reply)
+            print("\n--- Parsed Map Data (if any) ---")
+            try:
+                structured_data = json.loads(raw_text)
+                if isinstance(structured_data, list) and structured_data:
+                    for i, item in enumerate(structured_data, 1):
+                        print(f"{i}. {item.get('location_name', 'N/A')}: {item.get('description', 'No description')}")
+                else:
+                    print("No location data found.")
+            except Exception as e:
+                logger.warning(f"Failed to parse structured JSON: {e}")
+                print("Fallback: displaying raw LLM response")
+                print(raw_text)
 
-            print("\n--- Retrieved Documents (Top 3) ---")
-            if retrieved_docs:
-                for i, doc in enumerate(retrieved_docs[:3]): # Display top 3 docs
-                    print(f"Document {i+1} (ID: {doc.id}, Score: {doc.score:.4f}):")
-                    print(f"Content: {doc.content[:200]}...") # Print first 200 chars
-                    print(f"Metadata: {doc.meta}")
-                    print("-" * 30)
-            else:
-                print("No documents retrieved for this query.")
-            print("---------------------------\n")
+            # Save result
+            out_path = Path("output") / f"query_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(out_path, "w", encoding="utf-8") as f:
+                try:
+                    json.dump(structured_data, f, indent=2)
+                except Exception:
+                    f.write(raw_text)
+            print(f"Results saved to {out_path}")
 
         except Exception as e:
-            logger.error(f"An error occurred during pipeline execution: {e}")
-            logger.error("Please ensure your Gemini API key is valid and your quota has not been exceeded.")
-            print("An error occurred. Please check the console for details and try again.")
-            print("---------------------------\n")
+            logger.error(f"Pipeline error: {e}", exc_info=True)
+            print("Something went wrong. Check logs.")
 
 if __name__ == "__main__":
     main()
