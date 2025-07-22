@@ -40,6 +40,9 @@ function App() {
             if (response.ok) {
                 setAnswer(data.answer);
                 setRetrievedDocs(data.retrieved_documents);
+                if (data.structured_locations?.length > 0) {
+                    console.log("🗺 Structured Map Data:", data.structured_locations);
+                }
             } else {
                 setError(data.error || 'An unknown error occurred.');
                 setAnswer('Error: ' + (data.error || 'Please check console.'));
@@ -109,18 +112,17 @@ function App() {
 
             {/* Retrieved Documents Display */}
             <div className="bg-gray-50 p-4 rounded-md border border-gray-200">
-                <h2 className="text-xl font-semibold text-gray-700 mb-2">Retrieved Documents:</h2>
-                {retrievedDocs.length > 0 ? (
+                <h2 className="text-xl font-semibold text-gray-700 mb-2">Structured Locations:</h2>
+                {data.structured_locations?.length > 0 ? (
                     <ul className="list-disc list-inside space-y-2">
-                        {retrievedDocs.map((doc, index) => (
-                            <li key={doc.id || index} className="text-gray-700">
-                                <span className="font-medium">ID:</span> {doc.id} - <span className="font-medium">Score:</span> {doc.score.toFixed(4)}
-                                {/* You can add more metadata here if serialized */}
-                            </li>
-                        ))}
+                    {data.structured_locations.map((loc, index) => (
+                        <li key={index} className="text-gray-700">
+                        <span className="font-medium">{loc.location_name}:</span> {loc.description}
+                        </li>
+                    ))}
                     </ul>
                 ) : (
-                    <p className="text-gray-600">No documents retrieved or displayed.</p>
+                    <p className="text-gray-600">No map-relevant locations found.</p>
                 )}
             </div>
         </div>

@@ -38,14 +38,31 @@ def get_rag_pipeline():
         rag_pipeline.add_component("retriever", ChromaEmbeddingRetriever(document_store=ds))
         rag_pipeline.add_component("prompt_builder", ChatPromptBuilder(template=[
             ChatMessage.from_system("""
-Given the following information, answer the question concisely and accurately.
-If the provided information does not contain the answer, state that the answer is not found in the provided context.
+                You are a helpful assistant extracting map-relevant information from documents.
 
-Documents:
-{% for doc in documents %}
-    {{ doc.content }}
-{% endfor %}
-"""),
+                Your task is to find geographic locations mentioned in the context and describe their relevance. 
+                Only include locations that are meaningful to the query or context.
+
+                Return your output in the following strict JSON format:
+                [
+                {
+                    "location_name": "name of the place",
+                    "description": "why it is relevant or what is happening there"
+                },
+                ...
+                ]
+
+                Guidelines:
+                - Be concise: keep descriptions under 30 words
+                - Be accurate: do not fabricate location names
+                - Be consistent: always return a JSON array (even if empty)
+                - If no locations are relevant, return: []
+
+                Context:
+                {% for doc in documents %}
+                {{ doc.content }}
+                {% endfor %}
+                """),
             ChatMessage.from_user("{{query}}")
         ],
         required_variables=['documents', 'query']
@@ -74,59 +91,55 @@ class RAGQueryAPIView(APIView):
     Expects a POST request with a 'query' field.
     """
     def post(self, request, *args, **kwargs):
-        logger.info("RAGQueryAPIView received POST request.")
         serializer = QuerySerializer(data=request.data)
         if not serializer.is_valid():
-            logger.warning(f"Invalid query received: {serializer.errors}")
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
         user_query = serializer.validated_data['query']
-        logger.info(f"Validated query: '{user_query}'")
-
         try:
             pipeline = get_rag_pipeline()
-            logger.info(f"Running RAG pipeline for query: '{user_query}'")
-
             results = pipeline.run({
                 "text_embedder": {"text": user_query},
                 "prompt_builder": {"query": user_query}
             })
-            logger.info("RAG pipeline execution completed.")
 
-            llm_answer = results.get("gemini_generator", {}).get("replies", ["No answer generated."])[0]
-            retrieved_docs_raw = results.get("retriever", {}).get("documents", [])
-            logger.info(f"LLM Answer: {llm_answer[:100]}...") # Log snippet of answer
-            logger.info(f"Retrieved {len(retrieved_docs_raw)} documents.")
+            llm_reply = results.get("gemini_generator", {}).get("replies", ["No answer generated."])[0]
+            raw_text = llm_reply.content[0].text if hasattr(llm_reply, "content") else llm_reply
 
-            retrieved_docs_serialized = []
-            for doc in retrieved_docs_raw:
-                content_snippet = doc.content[:200] + "..." if doc.content and len(doc.content) > 200 else doc.content
-                doc_meta = {
+            # ✅ JSON parsing
+            try:
+                structured_data = json.loads(raw_text)
+                if not isinstance(structured_data, list):
+                    structured_data = []
+            except Exception as e:
+                logger.warning(f"Failed to parse JSON from LLM: {e}")
+                structured_data = []
+
+            # ✅ Format retrieved documents
+            retrieved_docs = results.get("retriever", {}).get("documents", [])
+            retrieved_serialized = []
+            for doc in retrieved_docs:
+                snippet = doc.content[:200] + "..." if doc.content and len(doc.content) > 200 else doc.content
+                retrieved_serialized.append({
                     "id": doc.id,
                     "score": doc.score,
-                    "content_snippet": content_snippet
-                }
-                retrieved_docs_serialized.append(doc_meta)
-            
+                    "content_snippet": snippet
+                })
+
+            # ✅ Final response
             response_data = {
-                "answer": llm_answer,
-                "retrieved_documents": retrieved_docs_serialized
+                "structured_locations": structured_data,
+                "retrieved_documents": retrieved_serialized,
+                "raw_llm_output": raw_text
             }
+
             response_serializer = RAGResponseSerializer(data=response_data)
             response_serializer.is_valid(raise_exception=True)
-            logger.info("Sending successful RAG response.")
             return Response(response_serializer.data, status=status.HTTP_200_OK)
 
         except Exception as e:
-            logger.error(f"Error during RAG pipeline execution for query '{user_query}': {e}", exc_info=True)
-            if "429 RESOURCE_EXHAUSTED" in str(e):
-                logger.warning("API Quota Exceeded for Gemini API.")
-                return Response(
-                    {"error": "API Quota Exceeded. Please try again later.", "details": str(e)},
-                    status=status.HTTP_429_TOO_MANY_REQUESTS
-                )
-            logger.error("An internal server error occurred during RAG query.")
+            logger.error(f"RAG processing failed: {e}", exc_info=True)
             return Response(
-                {"error": "An internal server error occurred.", "details": str(e)},
+                {"error": "Internal server error", "details": str(e)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
