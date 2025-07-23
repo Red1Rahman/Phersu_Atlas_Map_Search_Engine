@@ -1,133 +1,132 @@
-// frontend_static/js/App.js
-
-const { useState, useEffect } = React;
+import React, { useState } from 'react';
 
 function App() {
     const [query, setQuery] = useState('');
     const [answer, setAnswer] = useState('Your answer will appear here...');
+    const [structuredData, setStructuredData] = useState({
+        structured_locations: [],
+        structured_time_periods: [],
+        structured_rulers_or_polities: []
+    });
     const [retrievedDocs, setRetrievedDocs] = useState([]);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState(null);
-
-    const handleQueryChange = (event) => {
-        setQuery(event.target.value);
-    };
+    const [expandedDocs, setExpandedDocs] = useState({});
 
     const handleSubmit = async () => {
-        if (!query.trim()) {
-            setError("Please enter a question.");
-            return;
-        }
-
+        if (!query.trim()) return;
         setLoading(true);
         setError(null);
-        setAnswer('Thinking...');
-        setRetrievedDocs([]);
 
         try {
-            const response = await fetch('/api/rag-query/', {
+            const res = await fetch('/api/rag-query/', {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    // Add CSRF token if you enable it later (Django's default)
-                    // 'X-CSRFToken': getCookie('csrftoken'),
-                },
-                body: JSON.stringify({ query: query })
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ query })
             });
 
-            const data = await response.json();
+            const data = await res.json();
 
-            if (response.ok) {
+            if (res.ok) {
                 setAnswer(data.answer);
-                setRetrievedDocs(data.retrieved_documents);
-                if (data.structured_locations?.length > 0) {
-                    console.log("🗺 Structured Map Data:", data.structured_locations);
-                }
+                setStructuredData({
+                    structured_locations: data.structured_locations,
+                    structured_time_periods: data.structured_time_periods,
+                    structured_rulers_or_polities: data.structured_rulers_or_polities
+                });
+                setRetrievedDocs(data.full_document_contents.map((content, i) => ({
+                    content,
+                    meta: data.retrieved_documents[i]
+                })));
             } else {
-                setError(data.error || 'An unknown error occurred.');
-                setAnswer('Error: ' + (data.error || 'Please check console.'));
-                console.error("API Error:", data);
+                setError(data.error || 'An error occurred');
             }
         } catch (err) {
-            setError('Failed to connect to the server. Is the Django server running?');
-            setAnswer('Error: Failed to connect.');
-            console.error("Fetch Error:", err);
+            setError('Network error');
         } finally {
             setLoading(false);
         }
     };
 
-    // Optional: Function to get CSRF token (needed if you enable CSRF protection)
-    // function getCookie(name) {
-    //     let cookieValue = null;
-    //     if (document.cookie && document.cookie !== '') {
-    //         const cookies = document.cookie.split(';');
-    //         for (let i = 0; i < cookies.length; i++) {
-    //             const cookie = cookies[i].trim();
-    //             if (cookie.startsWith(name + '=')) {
-    //                 cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
-    //                 break;
-    //             }
-    //         }
-    //     }
-    //     return cookieValue;
-    // }
+    const toggleExpand = (index) => {
+        setExpandedDocs((prev) => ({ ...prev, [index]: !prev[index] }));
+    };
 
     return (
-        <div className="flex flex-col space-y-6">
-            <h1 className="text-3xl font-bold text-center text-gray-800">RAG Search Engine</h1>
+        <div className="p-4 max-w-4xl mx-auto space-y-6">
+            <h1 className="text-2xl font-bold">RAG Historical Search</h1>
 
-            {/* Query Input */}
-            <div className="flex flex-col md:flex-row space-y-4 md:space-y-0 md:space-x-4">
+            <div className="flex space-x-2">
                 <input
                     type="text"
+                    placeholder="Ask a question..."
                     value={query}
-                    onChange={handleQueryChange}
-                    placeholder="Ask a question about your documents..."
-                    className="flex-grow p-3 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    onChange={(e) => setQuery(e.target.value)}
+                    className="flex-1 p-2 border rounded"
                     disabled={loading}
                 />
                 <button
                     onClick={handleSubmit}
-                    className="px-6 py-3 bg-blue-600 text-white font-semibold rounded-md shadow-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:opacity-50"
                     disabled={loading}
+                    className="bg-blue-600 text-white px-4 py-2 rounded disabled:opacity-50"
                 >
-                    {loading ? 'Searching...' : 'Search'}
+                    {loading ? 'Loading...' : 'Search'}
                 </button>
             </div>
 
-            {/* Error Display */}
-            {error && (
-                <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded-md relative" role="alert">
-                    <strong className="font-bold">Error!</strong>
-                    <span className="block sm:inline"> {error}</span>
-                </div>
-            )}
+            {error && <div className="text-red-600">{error}</div>}
 
-            {/* Answer Display */}
-            <div className="bg-gray-50 p-4 rounded-md border border-gray-200">
-                <h2 className="text-xl font-semibold text-gray-700 mb-2">Answer:</h2>
+            <div className="bg-white p-4 border rounded shadow">
+                <h2 className="font-semibold text-lg mb-2">Answer</h2>
                 <p className="text-gray-800">{answer}</p>
             </div>
 
-            {/* Retrieved Documents Display */}
-            <div className="bg-gray-50 p-4 rounded-md border border-gray-200">
-                <h2 className="text-xl font-semibold text-gray-700 mb-2">Structured Locations:</h2>
-                {data.structured_locations?.length > 0 ? (
-                    <ul className="list-disc list-inside space-y-2">
-                    {data.structured_locations.map((loc, index) => (
-                        <li key={index} className="text-gray-700">
-                        <span className="font-medium">{loc.location_name}:</span> {loc.description}
-                        </li>
-                    ))}
+            <div className="bg-white p-4 border rounded shadow">
+                <h2 className="font-semibold text-lg mb-2">Structured Information</h2>
+                <div>
+                    <strong>Locations:</strong>
+                    <ul className="list-disc ml-5">
+                        {structuredData.structured_locations.map((loc, i) => (
+                            <li key={i}>{loc.name} - {loc.description}</li>
+                        ))}
                     </ul>
-                ) : (
-                    <p className="text-gray-600">No map-relevant locations found.</p>
-                )}
+                    <strong>Time Periods:</strong>
+                    <ul className="list-disc ml-5">
+                        {structuredData.structured_time_periods.map((t, i) => (
+                            <li key={i}>{t.name} - {t.description}</li>
+                        ))}
+                    </ul>
+                    <strong>Rulers/Polities:</strong>
+                    <ul className="list-disc ml-5">
+                        {structuredData.structured_rulers_or_polities.map((r, i) => (
+                            <li key={i}>{r.name} - {r.description}</li>
+                        ))}
+                    </ul>
+                </div>
+            </div>
+
+            <div className="bg-white p-4 border rounded shadow">
+                <h2 className="font-semibold text-lg mb-2">Retrieved Documents</h2>
+                {retrievedDocs.map((doc, i) => (
+                    <div key={i} className="mb-4 p-3 border rounded bg-gray-50">
+                        <div className="flex justify-between text-sm text-gray-600">
+                            <span>Doc {i + 1} | Score: {doc.meta.score.toFixed(2)}</span>
+                            <span>{doc.meta?.file_path?.split("/").pop() || 'Unknown Source'}</span>
+                        </div>
+                        <p className="mt-2 text-gray-800">
+                            {expandedDocs[i] ? doc.content : doc.content.slice(0, 300) + (doc.content.length > 300 ? '...' : '')}
+                        </p>
+                        <button
+                            onClick={() => toggleExpand(i)}
+                            className="text-blue-500 mt-1 text-sm hover:underline"
+                        >
+                            {expandedDocs[i] ? 'Show Less' : 'Show More'}
+                        </button>
+                    </div>
+                ))}
             </div>
         </div>
     );
 }
 
-// Mount the React app
-ReactDOM.render(<App />, document.getElementById('root'));
+export default App;

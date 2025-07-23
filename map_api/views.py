@@ -1,145 +1,118 @@
-# map_api/views.py
-
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from .serializers import QuerySerializer, RAGResponseSerializer
-import logging
-
-# Import the necessary Haystack components and pipeline setup
 from haystack import Pipeline
 from haystack_integrations.document_stores.chroma import ChromaDocumentStore
 from haystack.components.embedders import SentenceTransformersTextEmbedder
 from haystack_integrations.components.retrievers.chroma import ChromaEmbeddingRetriever
-from haystack.components.builders import ChatPromptBuilder
 from haystack_integrations.components.generators.google_genai import GoogleGenAIChatGenerator
-from haystack.dataclasses.chat_message import ChatMessage, ChatRole
-import os # For GOOGLE_API_KEY environment variable
+from haystack.dataclasses.chat_message import ChatMessage
+import logging, json, re
 
 logger = logging.getLogger(__name__)
 
-# --- RAG Pipeline Initialization (Global or Singleton Pattern) ---
-rag_pipeline_instance = None
+retrieval_pipeline = None
+generation_pipeline = None
 
-def get_rag_pipeline():
-    """
-    Initializes and returns the RAG pipeline.
-    This function ensures the pipeline is warmed up only once.
-    """
-    global rag_pipeline_instance
-    if rag_pipeline_instance is None:
-        logger.info("Initializing RAG pipeline for the API...")
-        
-        CHROMA_SAVEPATH = "./data/chroma_db"
-        ds = ChromaDocumentStore(persist_path=CHROMA_SAVEPATH)
 
-        rag_pipeline = Pipeline()
-        rag_pipeline.add_component("text_embedder", SentenceTransformersTextEmbedder(model="all-MiniLM-L6-v2"))
-        rag_pipeline.add_component("retriever", ChromaEmbeddingRetriever(document_store=ds))
-        rag_pipeline.add_component("prompt_builder", ChatPromptBuilder(template=[
-            ChatMessage.from_system("""
-                You are a helpful assistant extracting map-relevant information from documents.
+def get_pipelines():
+    global retrieval_pipeline, generation_pipeline
 
-                Your task is to find geographic locations mentioned in the context and describe their relevance. 
-                Only include locations that are meaningful to the query or context.
+    if retrieval_pipeline is None:
+        store = ChromaDocumentStore(persist_path="./data/chroma_db")
+        retrieval_pipeline = Pipeline()
+        retrieval_pipeline.add_component("embedder", SentenceTransformersTextEmbedder(model="sentence-transformers/all-mpnet-base-v2"))
+        retrieval_pipeline.add_component("retriever", ChromaEmbeddingRetriever(document_store=store))
+        retrieval_pipeline.connect("embedder.embedding", "retriever.query_embedding")
+        retrieval_pipeline.warm_up()
 
-                Return your output in the following strict JSON format:
-                [
-                {
-                    "location_name": "name of the place",
-                    "description": "why it is relevant or what is happening there"
-                },
-                ...
-                ]
+    if generation_pipeline is None:
+        generation_pipeline = Pipeline()
+        generation_pipeline.add_component("generator", GoogleGenAIChatGenerator(model="gemini-1.5-flash"))
+        generation_pipeline.warm_up()
 
-                Guidelines:
-                - Be concise: keep descriptions under 30 words
-                - Be accurate: do not fabricate location names
-                - Be consistent: always return a JSON array (even if empty)
-                - If no locations are relevant, return: []
+    return retrieval_pipeline, generation_pipeline
 
-                Context:
-                {% for doc in documents %}
-                {{ doc.content }}
-                {% endfor %}
-                """),
-            ChatMessage.from_user("{{query}}")
-        ],
-        required_variables=['documents', 'query']
-        ))
-        rag_pipeline.add_component("gemini_generator", GoogleGenAIChatGenerator(model="gemini-1.5-flash"))
-
-        rag_pipeline.connect("text_embedder.embedding", "retriever.query_embedding")
-        rag_pipeline.connect("retriever.documents", "prompt_builder.documents")
-        rag_pipeline.connect("prompt_builder.prompt", "gemini_generator.messages")
-
-        logger.info("Warming up the RAG pipeline components for API...")
-        try:
-            rag_pipeline.warm_up()
-            logger.info("RAG pipeline components warmed up successfully for API.")
-        except Exception as e:
-            logger.error(f"ERROR: Failed to warm up RAG pipeline components for API: {e}", exc_info=True) # Added exc_info=True
-            logger.error("Ensure GOOGLE_API_KEY is set in your environment (e.g., in the batch script or system-wide).")
-            raise e # Re-raise to prevent server from starting with a broken pipeline
-
-        rag_pipeline_instance = rag_pipeline
-    return rag_pipeline_instance
 
 class RAGQueryAPIView(APIView):
-    """
-    API endpoint to handle RAG queries.
-    Expects a POST request with a 'query' field.
-    """
     def post(self, request, *args, **kwargs):
         serializer = QuerySerializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-        user_query = serializer.validated_data['query']
+        query = serializer.validated_data['query']
+        logger.info(f"Received query: {query}")
         try:
-            pipeline = get_rag_pipeline()
-            results = pipeline.run({
-                "text_embedder": {"text": user_query},
-                "prompt_builder": {"query": user_query}
-            })
+            retrieval_pipeline, generation_pipeline = get_pipelines()
+            retrieval_results = retrieval_pipeline.run({"embedder": {"text": query}})
+            retrieved_docs = retrieval_results["retriever"]["documents"]
+            valid_docs = [doc for doc in retrieved_docs if getattr(doc, "content", None)]
 
-            llm_reply = results.get("gemini_generator", {}).get("replies", ["No answer generated."])[0]
-            raw_text = llm_reply.content[0].text if hasattr(llm_reply, "content") else llm_reply
+            if not valid_docs:
+                return Response({"answer": "No relevant documents found.", "retrieved_documents": [], "full_document_contents": [], "structured_locations": [], "structured_time_periods": [], "structured_rulers_or_polities": [], "raw_llm_output": ""})
 
-            # ✅ JSON parsing
-            try:
-                structured_data = json.loads(raw_text)
-                if not isinstance(structured_data, list):
-                    structured_data = []
-            except Exception as e:
-                logger.warning(f"Failed to parse JSON from LLM: {e}")
-                structured_data = []
+            context = "\n\n".join(doc.content[:1000] for doc in valid_docs)
+            messages = [
+                ChatMessage.from_system("""
+You are a helpful assistant who answers questions based on the provided historical context and returns structured data.
 
-            # ✅ Format retrieved documents
-            retrieved_docs = results.get("retriever", {}).get("documents", [])
-            retrieved_serialized = []
-            for doc in retrieved_docs:
-                snippet = doc.content[:200] + "..." if doc.content and len(doc.content) > 200 else doc.content
-                retrieved_serialized.append({
-                    "id": doc.id,
-                    "score": doc.score,
-                    "content_snippet": snippet
-                })
+Answer the user's query using the context and then return structured data in JSON format:
 
-            # ✅ Final response
-            response_data = {
-                "structured_locations": structured_data,
-                "retrieved_documents": retrieved_serialized,
-                "raw_llm_output": raw_text
+Answer:
+<your response>
+
+Structured JSON:
+{
+  "locations": [{"name": "string", "description": "string"}],
+  "time_periods": [{"name": "string", "description": "string"}],
+  "rulers_or_polities": [{"name": "string", "description": "string"}]
+}
+                """),
+                ChatMessage.from_user(f"Context:\n{context}\n\nUser Query: {query}")
+            ]
+
+            generation_result = generation_pipeline.run({"generator": {"messages": messages}})
+            llm_output = generation_result["generator"]["replies"][0].text
+            llm_output_cleaned = llm_output.replace("Answer: Answer:", "Answer:").strip()
+            llm_output_cleaned = re.sub(r"(?s)```json(.*?)```", r"\1", llm_output_cleaned)
+
+            match = re.search(r"Answer:\s*(.*?)\s*Structured JSON:\s*(\{.*)", llm_output_cleaned, re.DOTALL)
+            if match:
+                conversational_answer = match.group(1).strip()
+                json_part = match.group(2).strip()
+                try:
+                    structured_json = json.loads(json_part)
+                except Exception as e:
+                    logger.warning(f"Failed to parse structured JSON: {e}")
+                    structured_data = {}
+            else:
+                conversational_answer = llm_output.strip()
+                structured_json = {}
+
+
+            logger.info(f"Answer: {conversational_answer}")
+
+            structured_data = {
+                "structured_locations": structured_json.get("locations", []),
+                "structured_time_periods": structured_json.get("time_periods", []),
+                "structured_rulers_or_polities": structured_json.get("rulers_or_polities", [])
             }
 
-            response_serializer = RAGResponseSerializer(data=response_data)
-            response_serializer.is_valid(raise_exception=True)
-            return Response(response_serializer.data, status=status.HTTP_200_OK)
+            logger.info(f"Structured Data: {structured_json}")
+
+            response_data = {
+                "answer": conversational_answer,
+                "retrieved_documents": [
+                    {"id": doc.id, "score": doc.score} for doc in valid_docs
+                ],
+                "full_document_contents": [doc.content for doc in valid_docs],
+                **structured_data,
+                "raw_llm_output": llm_output
+            }
+
+            return Response(response_data)
 
         except Exception as e:
-            logger.error(f"RAG processing failed: {e}", exc_info=True)
-            return Response(
-                {"error": "Internal server error", "details": str(e)},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
+            logger.exception("RAG query failed")
+            return Response({"error": str(e)}, status=500)
