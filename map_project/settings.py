@@ -185,4 +185,13 @@ LOGGING = {
     },
 }
 
-
+EMBEDDING_MODELS = {
+    "mpnet": {
+        "name": "sentence-transformers/all-mpnet-base-v2",
+        "path": "./data/chroma_db"
+    },
+    "e5": {
+        "name": "intfloat/e5-large-v2",
+        "path": "./data/chroma_db_e5_embeddings"
+    }
+}

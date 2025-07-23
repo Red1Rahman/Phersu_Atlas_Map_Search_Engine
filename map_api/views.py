@@ -9,30 +9,40 @@ from haystack_integrations.components.retrievers.chroma import ChromaEmbeddingRe
 from haystack_integrations.components.generators.google_genai import GoogleGenAIChatGenerator
 from haystack.dataclasses.chat_message import ChatMessage
 import logging, json, re
+from django.conf import settings
 
 logger = logging.getLogger(__name__)
 
-retrieval_pipeline = None
+retrieval_pipelines = {}
 generation_pipeline = None
 
 
-def get_pipelines():
-    global retrieval_pipeline, generation_pipeline
+def get_retrieval_pipeline(embedding_type="e5"):
+    
+    if embedding_type not in retrieval_pipelines:
+        config = settings.EMBEDDING_MODELS.get(embedding_type)
+        if not config:
+            raise ValueError("Invalid embedding type")
 
-    if retrieval_pipeline is None:
-        store = ChromaDocumentStore(persist_path="./data/chroma_db")
-        retrieval_pipeline = Pipeline()
-        retrieval_pipeline.add_component("embedder", SentenceTransformersTextEmbedder(model="sentence-transformers/all-mpnet-base-v2"))
-        retrieval_pipeline.add_component("retriever", ChromaEmbeddingRetriever(document_store=store))
-        retrieval_pipeline.connect("embedder.embedding", "retriever.query_embedding")
-        retrieval_pipeline.warm_up()
+        store = ChromaDocumentStore(persist_path=config["path"])
+        pipeline = Pipeline()
+        pipeline.add_component("embedder", SentenceTransformersTextEmbedder(model=config["name"]))
+        pipeline.add_component("retriever", ChromaEmbeddingRetriever(document_store=store))
+        pipeline.connect("embedder.embedding", "retriever.query_embedding")
+        pipeline.warm_up()
+        retrieval_pipelines[embedding_type] = pipeline
 
+    logger.info(f"Using retrieval pipeline for embedding type: {embedding_type}")
+    return retrieval_pipelines[embedding_type]
+
+
+def get_generation_pipeline():
+    global generation_pipeline
     if generation_pipeline is None:
         generation_pipeline = Pipeline()
         generation_pipeline.add_component("generator", GoogleGenAIChatGenerator(model="gemini-1.5-flash"))
         generation_pipeline.warm_up()
-
-    return retrieval_pipeline, generation_pipeline
+    return generation_pipeline
 
 
 class RAGQueryAPIView(APIView):
@@ -42,9 +52,12 @@ class RAGQueryAPIView(APIView):
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
         query = serializer.validated_data['query']
+        embedding = serializer.validated_data.get('embedding', 'e5')
         logger.info(f"Received query: {query}")
         try:
-            retrieval_pipeline, generation_pipeline = get_pipelines()
+            logger.info(f"Using embedding model: {embedding}")
+            retrieval_pipeline = get_retrieval_pipeline(embedding)
+            generation_pipeline = get_generation_pipeline()
             retrieval_results = retrieval_pipeline.run({"embedder": {"text": query}})
             retrieved_docs = retrieval_results["retriever"]["documents"]
             valid_docs = [doc for doc in retrieved_docs if getattr(doc, "content", None)]
@@ -55,19 +68,19 @@ class RAGQueryAPIView(APIView):
             context = "\n\n".join(doc.content[:1000] for doc in valid_docs)
             messages = [
                 ChatMessage.from_system("""
-You are a helpful assistant who answers questions based on the provided historical context and returns structured data.
+                    You are a helpful assistant who answers questions based on the provided historical context and returns structured data.
 
-Answer the user's query using the context and then return structured data in JSON format:
+                    Answer the user's query using the context and then return structured data in JSON format:
 
-Answer:
-<your response>
+                    Answer:
+                    <your response>
 
-Structured JSON:
-{
-  "locations": [{"name": "string", "description": "string"}],
-  "time_periods": [{"name": "string", "description": "string"}],
-  "rulers_or_polities": [{"name": "string", "description": "string"}]
-}
+                    Structured JSON:
+                    {
+                    "locations": [{"name": "string", "description": "string"}],
+                    "time_periods": [{"name": "string", "description": "string"}],
+                    "rulers_or_polities": [{"name": "string", "description": "string"}]
+                    }
                 """),
                 ChatMessage.from_user(f"Context:\n{context}\n\nUser Query: {query}")
             ]

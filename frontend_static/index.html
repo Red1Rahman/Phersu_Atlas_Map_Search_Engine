@@ -22,6 +22,7 @@
 
         function App() {
             const [query, setQuery] = useState('');
+            const [embedding, setEmbedding] = useState('e5');
             const [answer, setAnswer] = useState('Your answer will appear here...');
             const [structuredData, setStructuredData] = useState({
                 structured_locations: [],
@@ -44,7 +45,7 @@
                     const res = await fetch('/api/rag-query/', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ query })
+                        body: JSON.stringify({ query, embedding })
                     });
 
                     const data = await res.json();
@@ -90,14 +91,14 @@
             };
 
             const hasStructuredInfo = structuredData.structured_locations.length > 0 ||
-                                      structuredData.structured_time_periods.length > 0 ||
-                                      structuredData.structured_rulers_or_polities.length > 0;
+                                    structuredData.structured_time_periods.length > 0 ||
+                                    structuredData.structured_rulers_or_polities.length > 0;
 
             return (
                 <div className="p-4 max-w-4xl mx-auto space-y-6">
                     <h1 className="text-2xl font-bold">RAG Historical Search</h1>
 
-                    <div className="flex space-x-2">
+                    <div className="flex flex-col md:flex-row md:space-x-2 space-y-2 md:space-y-0">
                         <input
                             type="text"
                             placeholder="Ask a question..."
@@ -107,6 +108,15 @@
                             className="flex-1 p-2 border rounded"
                             disabled={loading}
                         />
+                        <select
+                            value={embedding}
+                            onChange={(e) => setEmbedding(e.target.value)}
+                            className="p-2 border rounded md:w-40"
+                            disabled={loading}
+                        >
+                            <option value="e5">E5</option>
+                            <option value="mpnet">MPNet</option>
+                        </select>
                         <button
                             onClick={handleSubmit}
                             disabled={loading}

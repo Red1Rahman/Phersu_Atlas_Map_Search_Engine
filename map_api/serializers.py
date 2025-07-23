@@ -2,6 +2,7 @@ from rest_framework import serializers
 
 class QuerySerializer(serializers.Serializer):
     query = serializers.CharField(min_length=5, max_length=150)
+    embedding = serializers.ChoiceField(choices=['mpnet', 'e5'], default='e5')
 
 class DocumentMetadataSerializer(serializers.Serializer):
     id = serializers.CharField(max_length=255)
