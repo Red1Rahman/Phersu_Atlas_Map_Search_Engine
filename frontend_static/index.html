@@ -1,15 +1,23 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>RAG Historical Search</title>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Phersu Atlas - RAG Search</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
     <style>
-        body { font-family: 'Inter', sans-serif; }
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+
+        summary {
+            cursor: pointer;
+        }
     </style>
 </head>
+
 <body class="bg-gray-100 min-h-screen p-6">
     <div id="root" class="max-w-4xl mx-auto"></div>
 
@@ -23,88 +31,193 @@
         function App() {
             const [query, setQuery] = useState('');
             const [embedding, setEmbedding] = useState('e5');
-            const [answer, setAnswer] = useState('Your answer will appear here...');
-            const [structuredData, setStructuredData] = useState({
-                structured_locations: [],
-                structured_time_periods: [],
-                structured_rulers_or_polities: []
-            });
+            const [chatHistory, setChatHistory] = useState([]);
+            const [structuredData, setStructuredData] = useState({});
             const [retrievedDocs, setRetrievedDocs] = useState([]);
             const [loading, setLoading] = useState(false);
             const [error, setError] = useState(null);
             const [expandedDocs, setExpandedDocs] = useState({});
-            const [searchDone, setSearchDone] = useState(false);
+            const useMockData = true; // set to false to use real backend
 
             const handleSubmit = async () => {
                 if (!query.trim()) return;
                 setLoading(true);
                 setError(null);
-                setSearchDone(false);
 
-                try {
-                    const res = await fetch('/api/rag-query/', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ query, embedding })
-                    });
+                if (useMockData) {
+                    const mockData = {
+                        answer: "The Neolithic Age saw the use of polished stone tools, while the Iron Age introduced iron implements.",
+                        full_document_contents: [
+                            "In the Neolithic Age, people used polished stone tools to clear forests and cultivate land.",
+                            "The Iron Age brought advanced farming tools made from iron, improving productivity."
+                        ],
+                        retrieved_documents: [
+                            { id: "doc1", score: 0.91 },
+                            { id: "doc2", score: 0.88 }
+                        ],
+                        structured_locations: [
+                            { name: "Africa", description: "Regions where iron tools were first used." }
+                        ],
+                        structured_time_periods: [
+                            { name: "Neolithic Age", description: "Use of polished stone axes and tools." },
+                            { name: "Iron Age", description: "Introduction of iron implements." }
+                        ],
+                        structured_rulers_or_polities: []
+                    };
 
-                    const data = await res.json();
-
-                    if (res.ok) {
-                        setAnswer(data.answer);
-                        setStructuredData({
-                            structured_locations: data.structured_locations,
-                            structured_time_periods: data.structured_time_periods,
-                            structured_rulers_or_polities: data.structured_rulers_or_polities
-                        });
-                        setRetrievedDocs(data.full_document_contents.map((content, i) => ({
+                    const newPair = {
+                        question: query,
+                        answer: mockData.answer,
+                        retrievedDocs: mockData.full_document_contents.map((content, i) => ({
                             content,
-                            meta: data.retrieved_documents[i]
-                        })));
-                        setSearchDone(true);
-                    } else {
-                        setError(data.error || 'An error occurred');
-                    }
-                } catch (err) {
-                    setError('Network error');
-                } finally {
-                    setLoading(false);
-                }
-            };
+                            meta: mockData.retrieved_documents[i]
+                        })),
+                        structured: {
+                            structured_locations: mockData.structured_locations,
+                            structured_time_periods: mockData.structured_time_periods,
+                            structured_rulers_or_polities: mockData.structured_rulers_or_polities
+                        }
+                    };
 
-            const handleClear = () => {
-                setQuery('');
-                setAnswer('Your answer will appear here...');
-                setStructuredData({
-                    structured_locations: [],
-                    structured_time_periods: [],
-                    structured_rulers_or_polities: []
-                });
-                setRetrievedDocs([]);
-                setExpandedDocs({});
-                setError(null);
-                setSearchDone(false);
+                    setChatHistory((prev) => [...prev, newPair]);
+                    setStructuredData(newPair.structured);
+                    setRetrievedDocs(newPair.retrievedDocs);
+                    setQuery('');
+                    setLoading(false);
+                    return;
+                }
+                else {
+
+                    try {
+                        const res = await fetch('/api/rag-query/', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ query, embedding }),
+                        });
+
+                        const data = await res.json();
+
+                        if (res.ok) {
+                            const newPair = { question: query, answer: data.answer };
+                            setChatHistory((prev) => [...prev, newPair]);
+                            setStructuredData({
+                                structured_locations: data.structured_locations || [],
+                                structured_time_periods: data.structured_time_periods || [],
+                                structured_rulers_or_polities: data.structured_rulers_or_polities || []
+                            });
+                            setRetrievedDocs(data.full_document_contents.map((content, i) => ({
+                                content,
+                                meta: data.retrieved_documents[i]
+                            })));
+                        } else {
+                            setError(data.error || 'Error occurred');
+                        }
+                    } catch {
+                        setError('Network error');
+                    } finally {
+                        setLoading(false);
+                        setQuery('');
+                    }
+                }
             };
 
             const toggleExpand = (index) => {
                 setExpandedDocs((prev) => ({ ...prev, [index]: !prev[index] }));
             };
 
-            const hasStructuredInfo = structuredData.structured_locations.length > 0 ||
-                                    structuredData.structured_time_periods.length > 0 ||
-                                    structuredData.structured_rulers_or_polities.length > 0;
+            const handleNewChat = async () => {
+                await fetch('/api/clear-chat/', { method: 'POST' });
+                setChatHistory([]);
+                setStructuredData({});
+                setRetrievedDocs([]);
+                setQuery('');
+                setError(null);
+            };
+
+            const hasStructured = structuredData.structured_locations?.length ||
+                structuredData.structured_time_periods?.length ||
+                structuredData.structured_rulers_or_polities?.length;
 
             return (
-                <div className="p-4 max-w-4xl mx-auto space-y-6">
-                    <h1 className="text-2xl font-bold">RAG Historical Search</h1>
+                <div className="space-y-6">
+                    <h1 className="text-2xl font-bold">Phersu Atlas RAG Search</h1>
 
+                    {/* Chat history */}
+                    <div className="space-y-3">
+                        {chatHistory.map((chatEntry, idx) => (
+                            <div key={idx} className="bg-white border rounded p-4 shadow space-y-2">
+                                <p className="font-semibold text-blue-600">Q: {chatEntry.question}</p>
+                                <p className="text-gray-800">A: {chatEntry.answer}</p>
+
+                                {chatEntry.structured && (
+                                    <details open className="mt-2">
+                                        <summary className="font-medium text-gray-700">Structured Information</summary>
+                                        <div className="mt-1 ml-4 space-y-1 text-sm text-gray-700">
+                                            {chatEntry.structured.structured_locations.length > 0 && (
+                                                <div>
+                                                    <strong>Locations:</strong>
+                                                    <ul className="list-disc ml-4">
+                                                        {chatEntry.structured.structured_locations.map((loc, i) => (
+                                                            <li key={i}>{loc.name} - {loc.description}</li>
+                                                        ))}
+                                                    </ul>
+                                                </div>
+                                            )}
+                                            {chatEntry.structured.structured_time_periods.length > 0 && (
+                                                <div>
+                                                    <strong>Time Periods:</strong>
+                                                    <ul className="list-disc ml-4">
+                                                        {chatEntry.structured.structured_time_periods.map((t, i) => (
+                                                            <li key={i}>{t.name} - {t.description}</li>
+                                                        ))}
+                                                    </ul>
+                                                </div>
+                                            )}
+                                            {chatEntry.structured.structured_rulers_or_polities.length > 0 && (
+                                                <div>
+                                                    <strong>Rulers/Polities:</strong>
+                                                    <ul className="list-disc ml-4">
+                                                        {chatEntry.structured.structured_rulers_or_polities.map((r, i) => (
+                                                            <li key={i}>{r.name} - {r.description}</li>
+                                                        ))}
+                                                    </ul>
+                                                </div>
+                                            )}
+                                        </div>
+                                    </details>
+                                )}
+
+                                {chatEntry.retrievedDocs?.length > 0 ? (
+                                    <details open className="mt-2">
+                                        <summary className="font-medium text-gray-700">Retrieved Documents</summary>
+                                        <div className="mt-1 ml-4 space-y-2 text-sm text-gray-800">
+                                            {chatEntry.retrievedDocs.map((doc, j) => (
+                                                <div key={j} className="border p-2 rounded bg-gray-50">
+                                                    <div className="flex justify-between text-xs text-gray-600">
+                                                        <span>Doc {j + 1} | Score: {doc.meta?.score?.toFixed(2) ?? 'N/A'}</span>
+                                                        <span>{doc.meta?.file_path?.split('/').pop() || 'Unknown Source'}</span>
+                                                    </div>
+                                                    <p className="mt-1">{doc.content.slice(0, 300)}{doc.content.length > 300 ? '...' : ''}</p>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </details>
+                                ) : (
+                                    <p className="text-sm text-gray-500 italic mt-2">No documents retrieved.</p>
+                                )}
+                            </div>
+                        ))}
+                    </div>
+
+
+                    {/* Query Input */}
                     <div className="flex flex-col md:flex-row md:space-x-2 space-y-2 md:space-y-0">
                         <input
                             type="text"
-                            placeholder="Ask a question..."
                             value={query}
                             onChange={(e) => setQuery(e.target.value)}
                             onKeyDown={(e) => e.key === 'Enter' && handleSubmit()}
+                            placeholder="Ask a question..."
                             className="flex-1 p-2 border rounded"
                             disabled={loading}
                         />
@@ -119,83 +232,24 @@
                         </select>
                         <button
                             onClick={handleSubmit}
-                            disabled={loading}
                             className="bg-blue-600 text-white px-4 py-2 rounded disabled:opacity-50"
+                            disabled={loading}
                         >
                             {loading ? 'Searching...' : 'Search'}
                         </button>
                         <button
-                            onClick={handleClear}
-                            className="bg-gray-400 text-white px-4 py-2 rounded"
+                            onClick={handleNewChat}
+                            className="bg-orange-500 text-white px-4 py-2 rounded disabled:opacity-50"
                             disabled={loading}
                         >
-                            Clear
+                            New Chat
                         </button>
                     </div>
 
+                    {/* Error Message */}
                     {error && <div className="text-red-600">{error}</div>}
 
-                    <div className="bg-white p-4 border rounded shadow">
-                        <h2 className="font-semibold text-lg mb-2">Answer</h2>
-                        {loading ? <p className="italic text-gray-500">Fetching response...</p> : <p className="text-gray-800">{answer}</p>}
-                    </div>
-
-                    {searchDone && hasStructuredInfo && (
-                        <div className="bg-white p-4 border rounded shadow">
-                            <h2 className="font-semibold text-lg mb-2">Structured Information</h2>
-                            {structuredData.structured_locations.length > 0 && (
-                                <>
-                                    <strong>Locations:</strong>
-                                    <ul className="list-disc ml-5">
-                                        {structuredData.structured_locations.map((loc, i) => (
-                                            <li key={i}>{loc.name} - {loc.description}</li>
-                                        ))}
-                                    </ul>
-                                </>
-                            )}
-                            {structuredData.structured_time_periods.length > 0 && (
-                                <>
-                                    <strong>Time Periods:</strong>
-                                    <ul className="list-disc ml-5">
-                                        {structuredData.structured_time_periods.map((t, i) => (
-                                            <li key={i}>{t.name} - {t.description}</li>
-                                        ))}
-                                    </ul>
-                                </>
-                            )}
-                            {structuredData.structured_rulers_or_polities.length > 0 && (
-                                <>
-                                    <strong>Rulers/Polities:</strong>
-                                    <ul className="list-disc ml-5">
-                                        {structuredData.structured_rulers_or_polities.map((r, i) => (
-                                            <li key={i}>{r.name} - {r.description}</li>
-                                        ))}
-                                    </ul>
-                                </>
-                            )}
-                        </div>
-                    )}
-
-                    <div className="bg-white p-4 border rounded shadow">
-                        <h2 className="font-semibold text-lg mb-2">Retrieved Documents</h2>
-                        {retrievedDocs.map((doc, i) => (
-                            <div key={i} className="mb-4 p-3 border rounded bg-gray-50">
-                                <div className="flex justify-between text-sm text-gray-600">
-                                    <span>Doc {i + 1} | Score: {doc.meta.score.toFixed(2)}</span>
-                                    <span>{doc.meta?.file_path?.split("/").pop() || 'Unknown Source'}</span>
-                                </div>
-                                <p className="mt-2 text-gray-800">
-                                    {expandedDocs[i] ? doc.content : doc.content.slice(0, 300) + (doc.content.length > 300 ? '...' : '')}
-                                </p>
-                                <button
-                                    onClick={() => toggleExpand(i)}
-                                    className="text-blue-500 mt-1 text-sm hover:underline"
-                                >
-                                    {expandedDocs[i] ? 'Show Less' : 'Show More'}
-                                </button>
-                            </div>
-                        ))}
-                    </div>
+                    
                 </div>
             );
         }
@@ -203,4 +257,5 @@
         ReactDOM.render(<App />, document.getElementById('root'));
     </script>
 </body>
+
 </html>

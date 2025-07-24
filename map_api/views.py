@@ -1,15 +1,21 @@
+from django.conf import settings
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
-from .serializers import QuerySerializer, RAGResponseSerializer
+from rest_framework.permissions import AllowAny
+from django.contrib.auth.models import User
+
+from .serializers import QuerySerializer
+from .models import ChatMessageHistory
+
 from haystack import Pipeline
 from haystack_integrations.document_stores.chroma import ChromaDocumentStore
 from haystack.components.embedders import SentenceTransformersTextEmbedder
 from haystack_integrations.components.retrievers.chroma import ChromaEmbeddingRetriever
 from haystack_integrations.components.generators.google_genai import GoogleGenAIChatGenerator
 from haystack.dataclasses.chat_message import ChatMessage
+
 import logging, json, re
-from django.conf import settings
 
 logger = logging.getLogger(__name__)
 
@@ -18,12 +24,10 @@ generation_pipeline = None
 
 
 def get_retrieval_pipeline(embedding_type="e5"):
-    
     if embedding_type not in retrieval_pipelines:
         config = settings.EMBEDDING_MODELS.get(embedding_type)
         if not config:
             raise ValueError("Invalid embedding type")
-
         store = ChromaDocumentStore(persist_path=config["path"])
         pipeline = Pipeline()
         pipeline.add_component("embedder", SentenceTransformersTextEmbedder(model=config["name"]))
@@ -31,8 +35,6 @@ def get_retrieval_pipeline(embedding_type="e5"):
         pipeline.connect("embedder.embedding", "retriever.query_embedding")
         pipeline.warm_up()
         retrieval_pipelines[embedding_type] = pipeline
-
-    logger.info(f"Using retrieval pipeline for embedding type: {embedding_type}")
     return retrieval_pipelines[embedding_type]
 
 
@@ -51,22 +53,38 @@ class RAGQueryAPIView(APIView):
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-        query = serializer.validated_data['query']
-        embedding = serializer.validated_data.get('embedding', 'e5')
-        logger.info(f"Received query: {query}")
+        query = serializer.validated_data["query"]
+        embedding = serializer.validated_data.get("embedding", "e5")
+
+        guest_user, _ = User.objects.get_or_create(username="guest")
+        logger.info(f"Received query: {query} using embedding: {embedding}")
+
         try:
-            logger.info(f"Using embedding model: {embedding}")
             retrieval_pipeline = get_retrieval_pipeline(embedding)
             generation_pipeline = get_generation_pipeline()
+
             retrieval_results = retrieval_pipeline.run({"embedder": {"text": query}})
             retrieved_docs = retrieval_results["retriever"]["documents"]
             valid_docs = [doc for doc in retrieved_docs if getattr(doc, "content", None)]
 
             if not valid_docs:
-                return Response({"answer": "No relevant documents found.", "retrieved_documents": [], "full_document_contents": [], "structured_locations": [], "structured_time_periods": [], "structured_rulers_or_polities": [], "raw_llm_output": ""})
+                return Response({
+                    "answer": "No relevant documents found.",
+                    "retrieved_documents": [],
+                    "full_document_contents": [],
+                    "structured_locations": [],
+                    "structured_time_periods": [],
+                    "structured_rulers_or_polities": [],
+                    "raw_llm_output": "",
+                    "chat_history": []
+                })
 
             context = "\n\n".join(doc.content[:1000] for doc in valid_docs)
-            messages = [
+
+            # Retrieve conversation history
+            history_entries = ChatMessageHistory.objects.filter(user=guest_user).order_by("-timestamp")[:6][::-1]
+
+            prompt_messages = [
                 ChatMessage.from_system("""
                     You are a helpful assistant who answers questions based on the provided historical context and returns structured data.
 
@@ -81,14 +99,31 @@ class RAGQueryAPIView(APIView):
                     "time_periods": [{"name": "string", "description": "string"}],
                     "rulers_or_polities": [{"name": "string", "description": "string"}]
                     }
-                """),
-                ChatMessage.from_user(f"Context:\n{context}\n\nUser Query: {query}")
+                """)
             ]
 
-            generation_result = generation_pipeline.run({"generator": {"messages": messages}})
+            chat_display = []
+
+            for entry in history_entries:
+                if entry.role == "user":
+                    prompt_messages.append(ChatMessage.from_user(entry.content))
+                    chat_display.append({"role": "user", "content": entry.content})
+                elif entry.role == "assistant":
+                    prompt_messages.append(ChatMessage.from_assistant(entry.content))
+                    chat_display.append({"role": "assistant", "content": entry.content})
+
+            prompt_messages.append(ChatMessage.from_user(f"Context:\n{context}\n\nUser Query: {query}"))
+
+            generation_result = generation_pipeline.run({"generator": {"messages": prompt_messages}})
             llm_output = generation_result["generator"]["replies"][0].text
             llm_output_cleaned = llm_output.replace("Answer: Answer:", "Answer:").strip()
             llm_output_cleaned = re.sub(r"(?s)```json(.*?)```", r"\1", llm_output_cleaned)
+
+            structured_data = {
+                "structured_locations": [],
+                "structured_time_periods": [],
+                "structured_rulers_or_polities": [],
+            }
 
             match = re.search(r"Answer:\s*(.*?)\s*Structured JSON:\s*(\{.*)", llm_output_cleaned, re.DOTALL)
             if match:
@@ -96,23 +131,32 @@ class RAGQueryAPIView(APIView):
                 json_part = match.group(2).strip()
                 try:
                     structured_json = json.loads(json_part)
+                    structured_data = {
+                        "structured_locations": structured_json.get("locations", []),
+                        "structured_time_periods": structured_json.get("time_periods", []),
+                        "structured_rulers_or_polities": structured_json.get("rulers_or_polities", [])
+                    }
                 except Exception as e:
                     logger.warning(f"Failed to parse structured JSON: {e}")
-                    structured_data = {}
             else:
                 conversational_answer = llm_output.strip()
-                structured_json = {}
 
+            # Save messages
+            ChatMessageHistory.objects.create(user=guest_user, role="user", content=query, embedding=embedding)
+            ChatMessageHistory.objects.create(
+                user=guest_user,
+                role="assistant",
+                content=llm_output_cleaned,
+                embedding=embedding,
+                structured_data=structured_data,
+                retrieved_documents=[
+                    {"id": doc.id, "score": doc.score, "content": doc.content[:300]}
+                    for doc in valid_docs
+                ]
+            )
 
-            logger.info(f"Answer: {conversational_answer}")
-
-            structured_data = {
-                "structured_locations": structured_json.get("locations", []),
-                "structured_time_periods": structured_json.get("time_periods", []),
-                "structured_rulers_or_polities": structured_json.get("rulers_or_polities", [])
-            }
-
-            logger.info(f"Structured Data: {structured_json}")
+            chat_display.append({"role": "user", "content": query})
+            chat_display.append({"role": "assistant", "content": conversational_answer})
 
             response_data = {
                 "answer": conversational_answer,
@@ -121,7 +165,8 @@ class RAGQueryAPIView(APIView):
                 ],
                 "full_document_contents": [doc.content for doc in valid_docs],
                 **structured_data,
-                "raw_llm_output": llm_output
+                "raw_llm_output": llm_output,
+                "chat_history": chat_display
             }
 
             return Response(response_data)
@@ -129,3 +174,12 @@ class RAGQueryAPIView(APIView):
         except Exception as e:
             logger.exception("RAG query failed")
             return Response({"error": str(e)}, status=500)
+
+
+class ClearChatAPIView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request, *args, **kwargs):
+        guest_user, _ = User.objects.get_or_create(username="guest")
+        ChatMessageHistory.objects.filter(user=guest_user).delete()
+        return Response({"message": "Chat history cleared."})
