@@ -16,11 +16,17 @@ from haystack_integrations.components.generators.google_genai import GoogleGenAI
 from haystack.dataclasses.chat_message import ChatMessage
 
 import logging, json, re
+import spacy
+from sentence_transformers import SentenceTransformer, util
 
 logger = logging.getLogger(__name__)
 
 retrieval_pipelines = {}
 generation_pipeline = None
+
+# Load once
+nlp = spacy.load("en_core_web_sm")
+bert_model = SentenceTransformer("all-MiniLM-L6-v2")
 
 def get_retrieval_pipeline(embedding_type="e5"):
     if embedding_type not in retrieval_pipelines:
@@ -44,9 +50,27 @@ def get_generation_pipeline():
         generation_pipeline.warm_up()
     return generation_pipeline
 
+def extract_keywords(texts, top_k=10):
+    all_phrases = []
+    for text in texts:
+        doc = nlp(text)
+        tokens = [token.text for token in doc if token.pos_ in {"PROPN", "NOUN", "VERB", "ADJ"} and not token.is_stop]
+        all_phrases.extend(tokens)
+
+    if not all_phrases:
+        return []
+
+    unique_phrases = list(set(all_phrases))
+    phrase_embeddings = bert_model.encode(unique_phrases, convert_to_tensor=True)
+    question_embedding = bert_model.encode(" ".join(texts), convert_to_tensor=True)
+
+    scores = util.cos_sim(question_embedding, phrase_embeddings)[0]
+    top_indices = scores.argsort(descending=True)[:top_k]
+    return [unique_phrases[i] for i in top_indices]
+
 class RAGQueryAPIView(APIView):
     def post(self, request, *args, **kwargs):
-        if getattr(settings, "USE_MOCK_RAG_RESPONSE", True):
+        if getattr(settings, "USE_MOCK_RAG_RESPONSE", False):
             mock_data = {
                 "answer": "Mock answer: Rome was founded in 753 BC.",
                 "retrieved_documents": [
@@ -64,10 +88,10 @@ class RAGQueryAPIView(APIView):
                 "structured_rulers_or_polities": [
                     {"name": "Romulus", "description": "First King of Rome, according to legend."}
                 ],
-                "raw_llm_output": "Answer: Rome was founded in 753 BC.\nStructured JSON: {...}"
+                "raw_llm_output": "Answer: Rome was founded in 753 BC."
             }
             return Response(mock_data)
-        
+
         serializer = QuerySerializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
@@ -95,8 +119,9 @@ class RAGQueryAPIView(APIView):
             ])
 
             recent_questions = [pair["user"] for pair in qa_pairs]
-            keyword_hint = ", ".join(recent_questions[-2:]) if recent_questions else ""
-            retrieval_context = f"Previous Keywords: {keyword_hint}\nHistory Summary: {history_summary}\nCurrent: {query}" if history_summary else query
+            keywords = extract_keywords(recent_questions) if recent_questions else []
+            keyword_hint = ", ".join(keywords)
+            retrieval_context = f"Keyword Hints: {keyword_hint}\nConversation Summary: {history_summary}\nQuery: {query}" if keyword_hint or history_summary else query
 
             retrieval_pipeline = get_retrieval_pipeline(embedding)
             retrieval_results = retrieval_pipeline.run({"embedder": {"text": retrieval_context}})
@@ -115,47 +140,34 @@ class RAGQueryAPIView(APIView):
                     "chat_history": []
                 })
 
-            context = "\n\n".join(doc.content[:1000] for doc in valid_docs)
+            doc_texts = [doc.content[:1000] for doc in valid_docs]
+            context = "\n---\n".join(doc_texts)
 
             prompt_template = f"""
-                You are a helpful assistant that answers questions using the provided documents. In addition to answering the user's query, extract structured metadata from the documents.
+                You are a helpful assistant that answers user questions using the provided documents and extracts structured metadata.
 
-                ---
-
-                Conversation Summary (if available):
-                {history_summary if history_summary else 'None'}
-
-                ---
+                Conversation Summary:
+                {history_summary if history_summary else ''}
 
                 Documents:
                 {context}
 
-                ---
-
                 Task:
-                1. Provide a concise answer to the user query.
-                2. Extract structured metadata in the following JSON format:
+                Answer the following query concisely.
 
-                Structured JSON:
-                {{
-                "locations": [{{"name": "...", "description": "..."}}],
-                "time_periods": [{{"name": "...", "description": "..."}}],
-                "rulers_or_polities": [{{"name": "...", "description": "..."}}]
-                }}
+                Then provide three lists:
+                - Locations: A list of locations mentioned, with short descriptions.
+                - Time Periods: A list of historical time periods mentioned, with short descriptions.
+                - Rulers or Polities: A list of historical rulers, governments, or kingdoms mentioned, with short descriptions.
 
-                User Query:
-                {query}
-
-                Only return the answer followed by the structured JSON.
+                Query: {query}
             """
-            
+
             prompt_messages = [ChatMessage.from_system(prompt_template)]
             prompt_messages.append(ChatMessage.from_user(f"Context:\n{context}\n\nUser Query: {query}"))
 
             generation_result = generation_pipeline.run({"generator": {"messages": prompt_messages}})
-            llm_output = generation_result["generator"]["replies"][0].text
-            llm_output_cleaned = llm_output.replace("Answer: Answer:", "Answer:").strip()
-            llm_output_cleaned = re.sub(r"(?s)```json(.*?)```", r"\1", llm_output_cleaned)
+            llm_output = generation_result["generator"]["replies"][0].text.strip()
 
             structured_data = {
                 "structured_locations": [],
@@ -163,27 +175,42 @@ class RAGQueryAPIView(APIView):
                 "structured_rulers_or_polities": [],
             }
 
-            match = re.search(r"Answer:\s*(.*?)\s*Structured JSON:\s*(\{.*)", llm_output_cleaned, re.DOTALL)
-            if match:
-                conversational_answer = match.group(1).strip()
-                json_part = match.group(2).strip()
-                try:
-                    structured_json = json.loads(json_part)
-                    structured_data = {
-                        "structured_locations": structured_json.get("locations", []),
-                        "structured_time_periods": structured_json.get("time_periods", []),
-                        "structured_rulers_or_polities": structured_json.get("rulers_or_polities", [])
-                    }
-                except Exception as e:
-                    logger.warning(f"Failed to parse structured JSON: {e}")
-            else:
-                conversational_answer = llm_output.strip()
+            # Extract using labeled sections instead of JSON
+            logger.info(f"LLM output: {llm_output}")
+            conversational_answer = llm_output.split("Locations:")[0].strip()
+            conversational_answer = "\n".join([
+                re.sub(r"[^\w\s.,:;!?()-]", "", line).strip()
+                for line in conversational_answer.splitlines()
+                if line.strip()
+            ])
+
+            def extract_section(label):
+                pattern = rf"{label}:\s*(.*?)(?:\n\w+:|$)"
+                match = re.search(pattern, llm_output, re.DOTALL | re.IGNORECASE)
+                return match.group(1).strip() if match else ""
+
+            def parse_bullets(text):
+                lines = [line.strip("-*• ").strip() for line in text.splitlines() if line.strip()]
+                parsed = []
+                for line in lines:
+                    if ":" in line:
+                        name, desc = line.split(":", 1)
+                        # Remove common markdown formatting
+                        clean_name = re.sub(r"\*+", "", name).strip()
+                        clean_desc = re.sub(r"\*+", "", desc).strip()
+                        parsed.append({"name": clean_name, "description": clean_desc})
+                return parsed
+
+
+            structured_data["structured_locations"] = parse_bullets(extract_section("Locations"))
+            structured_data["structured_time_periods"] = parse_bullets(extract_section("Time Periods"))
+            structured_data["structured_rulers_or_polities"] = parse_bullets(extract_section("Rulers or Polities"))
 
             ChatMessageHistory.objects.create(user=guest_user, role="user", content=query, embedding=embedding)
             ChatMessageHistory.objects.create(
                 user=guest_user,
                 role="assistant",
-                content=llm_output_cleaned,
+                content=llm_output,
                 embedding=embedding,
                 structured_data=structured_data,
                 retrieved_documents=[
@@ -221,7 +248,6 @@ class RAGQueryAPIView(APIView):
         except Exception as e:
             logger.exception("RAG query failed")
             return Response({"error": str(e)}, status=500)
-
 
 class ClearChatAPIView(APIView):
     permission_classes = [AllowAny]
