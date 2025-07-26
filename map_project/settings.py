@@ -192,6 +192,8 @@ EMBEDDING_MODELS = {
     },
     "e5": {
         "name": "intfloat/e5-large-v2",
-        "path": "./data/chroma_db_e5_embeddings"
+        "path": "./data/chroma_db_e5_embeddings - Copy"
     }
 }
+
+USE_MOCK_RAG_RESPONSE = False  # Set to False when you want to use the real pipeline

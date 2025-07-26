@@ -37,7 +37,14 @@
             const [loading, setLoading] = useState(false);
             const [error, setError] = useState(null);
             const [expandedDocs, setExpandedDocs] = useState({});
-            const useMockData = true; // set to false to use real backend
+            const useMockData = false; // set to false to use real backend
+
+            const hasStructured = (chatEntry) =>
+                chatEntry.structured &&
+                (chatEntry.structured.structured_locations?.length > 0 ||
+                    chatEntry.structured.structured_time_periods?.length > 0 ||
+                    chatEntry.structured.structured_rulers_or_polities?.length > 0);
+
 
             const handleSubmit = async () => {
                 if (!query.trim()) return;
@@ -98,21 +105,28 @@
                         const data = await res.json();
 
                         if (res.ok) {
-                            const newPair = { question: query, answer: data.answer };
+                            const newPair = {
+                                question: query,
+                                answer: data.answer,
+                                retrievedDocs: data.full_document_contents.map((content, i) => ({
+                                    content,
+                                    meta: data.retrieved_documents[i]
+                                })),
+                                structured: {
+                                    structured_locations: data.structured_locations || [],
+                                    structured_time_periods: data.structured_time_periods || [],
+                                    structured_rulers_or_polities: data.structured_rulers_or_polities || []
+                                }
+                            };
+
                             setChatHistory((prev) => [...prev, newPair]);
-                            setStructuredData({
-                                structured_locations: data.structured_locations || [],
-                                structured_time_periods: data.structured_time_periods || [],
-                                structured_rulers_or_polities: data.structured_rulers_or_polities || []
-                            });
-                            setRetrievedDocs(data.full_document_contents.map((content, i) => ({
-                                content,
-                                meta: data.retrieved_documents[i]
-                            })));
+                            setStructuredData(newPair.structured);
+                            setRetrievedDocs(newPair.retrievedDocs);
                         } else {
                             setError(data.error || 'Error occurred');
                         }
-                    } catch {
+                    } catch (e) {
+                        console.error('Error fetching data:', e);
                         setError('Network error');
                     } finally {
                         setLoading(false);
@@ -134,10 +148,6 @@
                 setError(null);
             };
 
-            const hasStructured = structuredData.structured_locations?.length ||
-                structuredData.structured_time_periods?.length ||
-                structuredData.structured_rulers_or_polities?.length;
-
             return (
                 <div className="space-y-6">
                     <h1 className="text-2xl font-bold">Phersu Atlas RAG Search</h1>
@@ -149,8 +159,8 @@
                                 <p className="font-semibold text-blue-600">Q: {chatEntry.question}</p>
                                 <p className="text-gray-800">A: {chatEntry.answer}</p>
 
-                                {chatEntry.structured && (
-                                    <details open className="mt-2">
+                                {hasStructured(chatEntry) ? (
+                                    <details closed = "true" className="mt-2">
                                         <summary className="font-medium text-gray-700">Structured Information</summary>
                                         <div className="mt-1 ml-4 space-y-1 text-sm text-gray-700">
                                             {chatEntry.structured.structured_locations.length > 0 && (
@@ -185,17 +195,17 @@
                                             )}
                                         </div>
                                     </details>
-                                )}
+                                ) : null}
 
-                                {chatEntry.retrievedDocs?.length > 0 ? (
-                                    <details open className="mt-2">
+                                {chatEntry.retrievedDocs && chatEntry.retrievedDocs.length > 0 ? (
+                                    <details closed = "true" className="mt-2">
                                         <summary className="font-medium text-gray-700">Retrieved Documents</summary>
                                         <div className="mt-1 ml-4 space-y-2 text-sm text-gray-800">
                                             {chatEntry.retrievedDocs.map((doc, j) => (
                                                 <div key={j} className="border p-2 rounded bg-gray-50">
                                                     <div className="flex justify-between text-xs text-gray-600">
-                                                        <span>Doc {j + 1} | Score: {doc.meta?.score?.toFixed(2) ?? 'N/A'}</span>
-                                                        <span>{doc.meta?.file_path?.split('/').pop() || 'Unknown Source'}</span>
+                                                        <span>Doc {j + 1} | Score: {doc.meta.score.toFixed(2) ?? 'N/A'}</span>
+                                                        <span>{doc.meta?.file_path ? doc.meta.file_path.split('/').pop() : 'Unknown Source'}</span>
                                                     </div>
                                                     <p className="mt-1">{doc.content.slice(0, 300)}{doc.content.length > 300 ? '...' : ''}</p>
                                                 </div>
@@ -249,7 +259,7 @@
                     {/* Error Message */}
                     {error && <div className="text-red-600">{error}</div>}
 
-                    
+
                 </div>
             );
         }

@@ -22,7 +22,6 @@ logger = logging.getLogger(__name__)
 retrieval_pipelines = {}
 generation_pipeline = None
 
-
 def get_retrieval_pipeline(embedding_type="e5"):
     if embedding_type not in retrieval_pipelines:
         config = settings.EMBEDDING_MODELS.get(embedding_type)
@@ -37,7 +36,6 @@ def get_retrieval_pipeline(embedding_type="e5"):
         retrieval_pipelines[embedding_type] = pipeline
     return retrieval_pipelines[embedding_type]
 
-
 def get_generation_pipeline():
     global generation_pipeline
     if generation_pipeline is None:
@@ -46,9 +44,30 @@ def get_generation_pipeline():
         generation_pipeline.warm_up()
     return generation_pipeline
 
-
 class RAGQueryAPIView(APIView):
     def post(self, request, *args, **kwargs):
+        if getattr(settings, "USE_MOCK_RAG_RESPONSE", True):
+            mock_data = {
+                "answer": "Mock answer: Rome was founded in 753 BC.",
+                "retrieved_documents": [
+                    {"score": 0.98, "file_path": "Legendary_Rome.pdf"}
+                ],
+                "full_document_contents": [
+                    "This is a mock document about the founding of Rome by Romulus in 753 BC."
+                ],
+                "structured_locations": [
+                    {"name": "Rome", "description": "Capital of ancient Rome, traditionally founded in 753 BC."}
+                ],
+                "structured_time_periods": [
+                    {"name": "8th century BC", "description": "The era traditionally associated with the founding of Rome."}
+                ],
+                "structured_rulers_or_polities": [
+                    {"name": "Romulus", "description": "First King of Rome, according to legend."}
+                ],
+                "raw_llm_output": "Answer: Rome was founded in 753 BC.\nStructured JSON: {...}"
+            }
+            return Response(mock_data)
+        
         serializer = QuerySerializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
@@ -60,10 +79,27 @@ class RAGQueryAPIView(APIView):
         logger.info(f"Received query: {query} using embedding: {embedding}")
 
         try:
-            retrieval_pipeline = get_retrieval_pipeline(embedding)
             generation_pipeline = get_generation_pipeline()
 
-            retrieval_results = retrieval_pipeline.run({"embedder": {"text": query}})
+            history_entries = ChatMessageHistory.objects.filter(user=guest_user).order_by("-timestamp")[:6][::-1]
+            qa_pairs = []
+            for entry in history_entries:
+                if entry.role == "user":
+                    qa_pairs.append({"user": entry.content})
+                elif entry.role == "assistant" and qa_pairs:
+                    qa_pairs[-1]["assistant"] = entry.content
+            qa_pairs = qa_pairs[-3:]
+
+            history_summary = "\n".join([
+                f"Q: {pair['user']}\nA: {pair.get('assistant', '')}" for pair in qa_pairs
+            ])
+
+            recent_questions = [pair["user"] for pair in qa_pairs]
+            keyword_hint = ", ".join(recent_questions[-2:]) if recent_questions else ""
+            retrieval_context = f"Previous Keywords: {keyword_hint}\nHistory Summary: {history_summary}\nCurrent: {query}" if history_summary else query
+
+            retrieval_pipeline = get_retrieval_pipeline(embedding)
+            retrieval_results = retrieval_pipeline.run({"embedder": {"text": retrieval_context}})
             retrieved_docs = retrieval_results["retriever"]["documents"]
             valid_docs = [doc for doc in retrieved_docs if getattr(doc, "content", None)]
 
@@ -81,37 +117,39 @@ class RAGQueryAPIView(APIView):
 
             context = "\n\n".join(doc.content[:1000] for doc in valid_docs)
 
-            # Retrieve conversation history
-            history_entries = ChatMessageHistory.objects.filter(user=guest_user).order_by("-timestamp")[:6][::-1]
+            prompt_template = f"""
+                You are a helpful assistant that answers questions using the provided documents. In addition to answering the user's query, extract structured metadata from the documents.
 
-            prompt_messages = [
-                ChatMessage.from_system("""
-                    You are a helpful assistant who answers questions based on the provided historical context and returns structured data.
+                ---
 
-                    Answer the user's query using the context and then return structured data in JSON format:
+                Conversation Summary (if available):
+                {history_summary if history_summary else 'None'}
 
-                    Answer:
-                    <your response>
+                ---
 
-                    Structured JSON:
-                    {
-                    "locations": [{"name": "string", "description": "string"}],
-                    "time_periods": [{"name": "string", "description": "string"}],
-                    "rulers_or_polities": [{"name": "string", "description": "string"}]
-                    }
-                """)
-            ]
+                Documents:
+                {context}
 
-            chat_display = []
+                ---
 
-            for entry in history_entries:
-                if entry.role == "user":
-                    prompt_messages.append(ChatMessage.from_user(entry.content))
-                    chat_display.append({"role": "user", "content": entry.content})
-                elif entry.role == "assistant":
-                    prompt_messages.append(ChatMessage.from_assistant(entry.content))
-                    chat_display.append({"role": "assistant", "content": entry.content})
+                Task:
+                1. Provide a concise answer to the user query.
+                2. Extract structured metadata in the following JSON format:
 
+                Structured JSON:
+                {{
+                "locations": [{{"name": "...", "description": "..."}}],
+                "time_periods": [{{"name": "...", "description": "..."}}],
+                "rulers_or_polities": [{{"name": "...", "description": "..."}}]
+                }}
+
+                User Query:
+                {query}
+
+                Only return the answer followed by the structured JSON.
+            """
+            
+            prompt_messages = [ChatMessage.from_system(prompt_template)]
             prompt_messages.append(ChatMessage.from_user(f"Context:\n{context}\n\nUser Query: {query}"))
 
             generation_result = generation_pipeline.run({"generator": {"messages": prompt_messages}})
@@ -141,7 +179,6 @@ class RAGQueryAPIView(APIView):
             else:
                 conversational_answer = llm_output.strip()
 
-            # Save messages
             ChatMessageHistory.objects.create(user=guest_user, role="user", content=query, embedding=embedding)
             ChatMessageHistory.objects.create(
                 user=guest_user,
@@ -154,6 +191,12 @@ class RAGQueryAPIView(APIView):
                     for doc in valid_docs
                 ]
             )
+
+            chat_display = []
+            for pair in qa_pairs:
+                chat_display.append({"role": "user", "content": pair["user"]})
+                if "assistant" in pair:
+                    chat_display.append({"role": "assistant", "content": pair["assistant"]})
 
             chat_display.append({"role": "user", "content": query})
             chat_display.append({"role": "assistant", "content": conversational_answer})
@@ -168,6 +211,10 @@ class RAGQueryAPIView(APIView):
                 "raw_llm_output": llm_output,
                 "chat_history": chat_display
             }
+
+            logger.info("RAG query successful")
+            logger.info(f"Answer: {conversational_answer}")
+            logger.info(f"Structured data: {structured_data}")
 
             return Response(response_data)
 

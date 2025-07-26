@@ -17,7 +17,7 @@ function App() {
     const [error, setError] = useState(null);
     const [showStructured, setShowStructured] = useState(true);
     const [showDocuments, setShowDocuments] = useState(true);
-    const useMock = true; // set to false to use real backend
+    const useMock = false; // set to false to use real backend
 
 
     const handleSubmit = async () => {
@@ -114,17 +114,86 @@ function App() {
                     <div key={idx} className="bg-white border rounded p-4 shadow">
                         <p className="font-semibold text-blue-600">Q: {item.question}</p>
                         <p className="text-gray-800 mt-1">A: {item.answer}</p>
-                        {item.documents?.length > 0 ? (
-                            item.documents.map((doc, j) => (
-                                <div key={j} className="mt-2 p-2 border rounded bg-gray-50 text-sm">
-                                    <div className="text-gray-600 mb-1">
-                                        Doc {j + 1} | Score: {doc.meta.score.toFixed(2)}
-                                    </div>
-                                    <div className="text-gray-800">{doc.content}</div>
+                        {hasStructuredInfo && (
+                            <div className="bg-white p-4 border rounded shadow">
+                                <div className="flex justify-between items-center">
+                                    <h2 className="font-semibold text-lg">Structured Information</h2>
+                                    <button
+                                        onClick={() => setShowStructured(!showStructured)}
+                                        className="text-sm text-blue-500 hover:underline"
+                                    >
+                                        {showStructured ? 'Hide' : 'Show'}
+                                    </button>
                                 </div>
-                            ))
-                        ) : (
-                            <div className="text-gray-500 italic mt-2">No documents retrieved</div>
+                                {showStructured && (
+                                    <div className="mt-2 space-y-2">
+                                        {structuredData.structured_locations.length > 0 && (
+                                            <>
+                                                <strong>Locations:</strong>
+                                                <ul className="list-disc ml-5">
+                                                    {structuredData.structured_locations.map((loc, i) => (
+                                                        <li key={i}>{loc.name} - {loc.description}</li>
+                                                    ))}
+                                                </ul>
+                                            </>
+                                        )}
+                                        {structuredData.structured_time_periods.length > 0 && (
+                                            <>
+                                                <strong>Time Periods:</strong>
+                                                <ul className="list-disc ml-5">
+                                                    {structuredData.structured_time_periods.map((t, i) => (
+                                                        <li key={i}>{t.name} - {t.description}</li>
+                                                    ))}
+                                                </ul>
+                                            </>
+                                        )}
+                                        {structuredData.structured_rulers_or_polities.length > 0 && (
+                                            <>
+                                                <strong>Rulers/Polities:</strong>
+                                                <ul className="list-disc ml-5">
+                                                    {structuredData.structured_rulers_or_polities.map((r, i) => (
+                                                        <li key={i}>{r.name} - {r.description}</li>
+                                                    ))}
+                                                </ul>
+                                            </>
+                                        )}
+                                    </div>
+                                )}
+                            </div>
+                        )}
+
+                        {retrievedDocs.length > 0 && (
+                            <div className="bg-white p-4 border rounded shadow">
+                                <div className="flex justify-between items-center">
+                                    <h2 className="font-semibold text-lg">Retrieved Documents</h2>
+                                    <button
+                                        onClick={() => setShowDocuments(!showDocuments)}
+                                        className="text-sm text-blue-500 hover:underline"
+                                    >
+                                        {showDocuments ? 'Hide' : 'Show'}
+                                    </button>
+                                </div>
+                                {showDocuments && retrievedDocs.map((doc, i) => (
+                                    <div key={i} className="mb-4 p-3 border rounded bg-gray-50">
+                                        <div className="flex justify-between text-sm text-gray-600">
+                                            <span>Doc {i + 1} | Score: {doc.meta.score.toFixed(2)}</span>
+                                            <span>{doc.meta?.file_path?.split('/').pop() || 'Unknown Source'}</span>
+                                        </div>
+                                        <p className="mt-2 text-gray-800">
+                                            {expandedDocs[i]
+                                                ? doc.content
+                                                : doc.content.slice(0, 300) + (doc.content.length > 300 ? '...' : '')
+                                            }
+                                        </p>
+                                        <button
+                                            onClick={() => toggleExpand(i)}
+                                            className="text-blue-500 mt-1 text-sm hover:underline"
+                                        >
+                                            {expandedDocs[i] ? 'Show Less' : 'Show More'}
+                                        </button>
+                                    </div>
+                                ))}
+                            </div>
                         )}
                     </div>
                 ))}
@@ -173,88 +242,6 @@ function App() {
             </div>
 
             {error && <div className="text-red-600">{error}</div>}
-
-            {hasStructuredInfo && (
-                <div className="bg-white p-4 border rounded shadow">
-                    <div className="flex justify-between items-center">
-                        <h2 className="font-semibold text-lg">Structured Information</h2>
-                        <button
-                            onClick={() => setShowStructured(!showStructured)}
-                            className="text-sm text-blue-500 hover:underline"
-                        >
-                            {showStructured ? 'Hide' : 'Show'}
-                        </button>
-                    </div>
-                    {showStructured && (
-                        <div className="mt-2 space-y-2">
-                            {structuredData.structured_locations.length > 0 && (
-                                <>
-                                    <strong>Locations:</strong>
-                                    <ul className="list-disc ml-5">
-                                        {structuredData.structured_locations.map((loc, i) => (
-                                            <li key={i}>{loc.name} - {loc.description}</li>
-                                        ))}
-                                    </ul>
-                                </>
-                            )}
-                            {structuredData.structured_time_periods.length > 0 && (
-                                <>
-                                    <strong>Time Periods:</strong>
-                                    <ul className="list-disc ml-5">
-                                        {structuredData.structured_time_periods.map((t, i) => (
-                                            <li key={i}>{t.name} - {t.description}</li>
-                                        ))}
-                                    </ul>
-                                </>
-                            )}
-                            {structuredData.structured_rulers_or_polities.length > 0 && (
-                                <>
-                                    <strong>Rulers/Polities:</strong>
-                                    <ul className="list-disc ml-5">
-                                        {structuredData.structured_rulers_or_polities.map((r, i) => (
-                                            <li key={i}>{r.name} - {r.description}</li>
-                                        ))}
-                                    </ul>
-                                </>
-                            )}
-                        </div>
-                    )}
-                </div>
-            )}
-
-            {retrievedDocs.length > 0 && (
-                <div className="bg-white p-4 border rounded shadow">
-                    <div className="flex justify-between items-center">
-                        <h2 className="font-semibold text-lg">Retrieved Documents</h2>
-                        <button
-                            onClick={() => setShowDocuments(!showDocuments)}
-                            className="text-sm text-blue-500 hover:underline"
-                        >
-                            {showDocuments ? 'Hide' : 'Show'}
-                        </button>
-                    </div>
-                    {showDocuments && retrievedDocs.map((doc, i) => (
-                        <div key={i} className="mb-4 p-3 border rounded bg-gray-50">
-                            <div className="flex justify-between text-sm text-gray-600">
-                                <span>Doc {i + 1} | Score: {doc.meta.score.toFixed(2)}</span>
-                                <span>{doc.meta?.file_path?.split('/').pop() || 'Unknown Source'}</span>
-                            </div>
-                            <p className="mt-2 text-gray-800">
-                                {expandedDocs[i]
-                                    ? doc.content
-                                    : doc.content.slice(0, 300) + (doc.content.length > 300 ? '...' : '')
-                                }
-                            </p>
-                            <button
-                                onClick={() => toggleExpand(i)}
-                                className="text-blue-500 mt-1 text-sm hover:underline"
-                            >
-                                {expandedDocs[i] ? 'Show Less' : 'Show More'}
-                            </button>
-                        </div>
-                    ))}
-                </div>
-            )}
         </div>
     );
 }
