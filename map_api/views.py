@@ -176,7 +176,7 @@ class RAGQueryAPIView(APIView):
             }
 
             # Extract using labeled sections instead of JSON
-            logger.info(f"LLM output: {llm_output}")
+            # logger.info(f"LLM output: {llm_output}")
             conversational_answer = llm_output.split("Locations:")[0].strip()
             conversational_answer = "\n".join([
                 re.sub(r"[^\w\s.,:;!?()-]", "", line).strip()
@@ -214,7 +214,12 @@ class RAGQueryAPIView(APIView):
                 embedding=embedding,
                 structured_data=structured_data,
                 retrieved_documents=[
-                    {"id": doc.id, "score": doc.score, "content": doc.content[:300]}
+                    {
+                        "id": doc.id, 
+                        "score": doc.score, 
+                        "content": doc.content[:300], 
+                        "file_path": doc.meta.get("file_path", "Unknown")
+                    }
                     for doc in valid_docs
                 ]
             )
@@ -231,7 +236,8 @@ class RAGQueryAPIView(APIView):
             response_data = {
                 "answer": conversational_answer,
                 "retrieved_documents": [
-                    {"id": doc.id, "score": doc.score} for doc in valid_docs
+                    {"id": doc.id, "score": doc.score,
+                        "file_path": doc.meta.get("file_path", "Unknown")} for doc in valid_docs
                 ],
                 "full_document_contents": [doc.content for doc in valid_docs],
                 **structured_data,
@@ -239,9 +245,9 @@ class RAGQueryAPIView(APIView):
                 "chat_history": chat_display
             }
 
-            logger.info("RAG query successful")
-            logger.info(f"Answer: {conversational_answer}")
-            logger.info(f"Structured data: {structured_data}")
+            # logger.info("RAG query successful")
+            # logger.info(f"Answer: {conversational_answer}")
+            # logger.info(f"Structured data: {structured_data}")
 
             return Response(response_data)
 

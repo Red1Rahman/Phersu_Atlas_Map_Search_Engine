@@ -34,12 +34,17 @@ converter = PyPDFToDocument()
 
 for path in pdf_paths:
     logger.info(f"Processing {path}...")
-    docs = converter.run(sources=[path])["documents"]
-    for doc in docs:
-        doc.meta["source_file"] = os.path.basename(path)
-    result = pipeline.run({"cleaner": {"documents": docs}})
+    raw_docs = converter.run(sources=[path])["documents"]
 
-print("Done.")
+    for doc in raw_docs:
+        # Ensure meta field is initialized and includes filename
+        if not hasattr(doc, "meta") or doc.meta is None:
+            doc.meta = {}
+        doc.meta["file_path"] = os.path.basename(path)
+
+    # Pass through the rest of the pipeline
+    result = pipeline.run({"cleaner": {"documents": raw_docs}})
+
 
 end_time = time.time()
 elapsed_time = end_time - start_time

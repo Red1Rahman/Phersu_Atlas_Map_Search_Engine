@@ -192,7 +192,7 @@ EMBEDDING_MODELS = {
     },
     "e5": {
         "name": "intfloat/e5-large-v2",
-        "path": "./data/chroma_db_e5_embeddings - Copy"
+        "path": "./data/chroma_db_e5_embeddings"
     }
 }
 
